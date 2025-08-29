@@ -1,0 +1,109 @@
+# Projeto de Sistema Embarcado 2025.2
+
+Este projeto é uma aplicação de sistema embarcado para o microcontrolador STM32L476RG. Ele é construído usando a biblioteca STM32 HAL e a biblioteca CMSIS DSP. O projeto está configurado para usar o toolchain GCC ARM e inclui um Makefile para compilar e gravar o firmware.
+
+## Estrutura do Projeto
+
+```
+.
+├── Core/                     # Código-fonte da aplicação
+├── Drivers/                  # Drivers HAL e CMSIS
+├── build/                    # Diretório de saída da compilação
+├── setup_env.sh              # Script para configurar o ambiente de desenvolvimento
+├── Makefile                  # Sistema de build
+├── STM32L476XX_FLASH.ld      # Script de link
+├── startup_stm32l476xx.s     # Arquivo de inicialização em assembly
+└── emebedded_sys_2025.2.ioc  # Arquivo do projeto STM32CubeMX
+```
+
+## Contribuindo
+
+Para contribuir com este projeto, siga estas diretrizes:
+
+1. **Crie um Novo Branch**: Para cada atividade ou funcionalidade, crie um novo branch a partir do branch `main`. Use um nome descritivo para o seu branch, como `feature/nome-da-funcionalidade` ou `bugfix/nome-do-bug`.
+
+2. **Atualize o Projeto com o STM32CubeMX**: No seu novo branch, use o programa STM32CubeMX para atualizar a configuração do projeto. Certifique-se de que todas as alterações sejam salvas e exportadas corretamente.
+
+3. **Faça Commit e Envie as Alterações**: Faça commit das suas alterações com mensagens claras e descritivas. Envie seu branch para o repositório remoto.
+
+4. **Envie um Pull Request**: Quando suas alterações estiverem completas, envie um pull request para revisão. Certifique-se de que seu branch está atualizado com o branch `main` antes de enviar.
+
+**Importante**: Commits diretos no branch `main` não são permitidos. Todas as alterações devem passar pelo processo de pull request.
+
+## Pré-requisitos
+
+Certifique-se de que as seguintes ferramentas estão instaladas no seu sistema:
+
+- GCC ARM toolchain (`gcc-arm-none-eabi`)
+- Make
+- CMake
+- Ferramentas ST-Link (`stlink-tools`)
+
+Você pode instalar essas dependências executando o script `setup_env.sh`:
+
+```bash
+sudo setup_env.sh
+```
+
+## Ambiente de Desenvolvimento
+
+Para configurar o ambiente de desenvolvimento no Visual Studio Code, as seguintes extensões são recomendadas:
+
+- [**STM32Cube clangd**](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32cube-ide-clangd): Fornece IntelliSense, depuração e navegação de código para C e C++.
+- [**STM32Cube Debug STLink GDB Server**](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32cube-ide-debug-stlink-gdbserver): Suporte à depuração para microcontroladores STM32 Cortex-M.
+- [**STM32Cube CMake Support**](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32cube-ide-build-cmake): Suporte para ferramentas CMake em projetos STM32Cube disponíveis no workspace do usuário.
+
+Você pode instalar essas extensões na Visual Studio Code Marketplace.
+
+## Compilando o Projeto
+
+Para compilar o projeto, execute o seguinte comando:
+
+```bash
+make
+```
+
+Isso gerará os seguintes arquivos no diretório `build/`:
+
+- `emebedded_sys_2025.2.elf`: Arquivo executável
+- `emebedded_sys_2025.2.hex`: Arquivo Intel HEX
+- `emebedded_sys_2025.2.bin`: Arquivo binário
+
+## Gravando o Firmware
+
+Para gravar o firmware no microcontrolador STM32L476RG, conecte sua placa via ST-Link e execute:
+
+```bash
+make upload
+```
+
+Isso gravará o arquivo binário na memória flash do microcontrolador no endereço `0x8000000`.
+
+## Limpando a Compilação
+
+Para limpar os arquivos gerados na compilação, execute:
+
+```bash
+make clean
+```
+
+## Configuração do Projeto
+
+O projeto está configurado para o microcontrolador STM32L476RG com as seguintes definições:
+
+- **CPU**: Cortex-M4
+- **FPU**: FPv4-SP-D16
+- **Float ABI**: Hard
+- **Otimização**: Debug (`-Og`)
+
+Você pode modificar essas configurações no `Makefile`.
+
+## Licença
+
+Este projeto está licenciado sob a Licença MIT. Consulte o arquivo `LICENSE` para mais detalhes.
+
+## Referências
+
+- [Documentação STM32 HAL](https://www.st.com/en/embedded-software/stm32cube.html)
+- [Biblioteca CMSIS DSP](https://arm-software.github.io/CMSIS_5/DSP/html/index.html)
+- [Ferramentas ST-Link](https://github.com/stlink-org/stlink)
