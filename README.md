@@ -1,6 +1,6 @@
-# Projeto de Sistema Embarcado 2025.2
+# Repositório de Sistema Embarcado 2025.2
 
-Este projeto é uma aplicação de sistema embarcado para o microcontrolador STM32L476RG. Ele é construído usando a biblioteca STM32 HAL e a biblioteca CMSIS DSP. O projeto está configurado para usar o toolchain GCC ARM e inclui um Makefile para compilar e gravar o firmware.
+Este é um repositório destinado para o desenvolvimento de projetos utilizando o microcontrolador STM32L476RG na disciplina de Sistema Embarcado do curso de Eng. da Computação da Universidade de Pernambuco. O projeto está configurado para usar o toolchain GCC ARM e inclui um Makefile para compilar e gravar o firmware.
 
 ## Estrutura do Projeto
 
@@ -22,13 +22,13 @@ Para contribuir com este projeto, siga estas diretrizes:
 
 1. **Crie um Novo Branch**: Para cada atividade ou funcionalidade, crie um novo branch a partir do branch `main`. Use um nome descritivo para o seu branch, como `feature/nome-da-funcionalidade` ou `bugfix/nome-do-bug`.
 
-2. **Atualize o Projeto com o STM32CubeMX**: No seu novo branch, use o programa STM32CubeMX para atualizar a configuração do projeto. Certifique-se de que todas as alterações sejam salvas e exportadas corretamente.
+2. **Atualize o Projeto com o STM32CubeMX**: No seu novo branch, use o programa STM32CubeMX para atualizar a configuração do projeto.
 
 3. **Faça Commit e Envie as Alterações**: Faça commit das suas alterações com mensagens claras e descritivas. Envie seu branch para o repositório remoto.
 
 4. **Envie um Pull Request**: Quando suas alterações estiverem completas, envie um pull request para revisão. Certifique-se de que seu branch está atualizado com o branch `main` antes de enviar.
 
-**Importante**: Commits diretos no branch `main` não são permitidos. Todas as alterações devem passar pelo processo de pull request.
+**Importante**: Certifique-se de abrir o arquivo `emebedded_sys_2025.2.ioc` presente dentro da raiz do projeto para que todas as alterações sejam salvas e exportadas corretamente.
 
 ## Pré-requisitos
 
@@ -49,9 +49,10 @@ sudo setup_env.sh
 
 Para configurar o ambiente de desenvolvimento no Visual Studio Code, as seguintes extensões são recomendadas:
 
-- [**STM32Cube clangd**](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32cube-ide-clangd): Fornece IntelliSense, depuração e navegação de código para C e C++.
-- [**STM32Cube Debug STLink GDB Server**](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32cube-ide-debug-stlink-gdbserver): Suporte à depuração para microcontroladores STM32 Cortex-M.
-- [**STM32Cube CMake Support**](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32cube-ide-build-cmake): Suporte para ferramentas CMake em projetos STM32Cube disponíveis no workspace do usuário.
+- [**C/C++ Extension Pack**](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools-extension-pack): Fornece suporte para desenvolvimento em C/C++.
+- [**CMake Tools**](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools): Suporte para projetos baseados em CMake.
+- [**Makefile Tools**](https://marketplace.visualstudio.com/items?itemName=ms-vscode.makefile-tools): Suporte para projetos baseados em Makefile.
+- [**Code Spell Checker**](https://marketplace.visualstudio.com/items?itemName=streetsidesoftware.code-spell-checker): Verificador ortográfico para melhorar a qualidade do código e documentação.
 
 Você pode instalar essas extensões na Visual Studio Code Marketplace.
 
