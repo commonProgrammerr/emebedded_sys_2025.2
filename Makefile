@@ -207,6 +207,6 @@ clean:
 # upload to board
 #######################################
 upload: $(BUILD_DIR)/$(TARGET).bin
-    st-flash write $< 0x8000000
+	st-flash --reset --connect-under-reset write $< 0x8000000
 
 # *** EOF ***
