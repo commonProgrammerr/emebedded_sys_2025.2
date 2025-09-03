@@ -7,8 +7,7 @@
                 "${workspaceFolder}/Drivers/STM32L4xx_HAL_Driver/Inc",
                 "${workspaceFolder}/Drivers/STM32L4xx_HAL_Driver/Inc/Legacy",
                 "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32L4xx/Include",
-                "${workspaceFolder}/Drivers/CMSIS/Include",
-                ""
+                "${workspaceFolder}/Drivers/CMSIS/Include"
             ],
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
@@ -17,18 +16,21 @@
                     "${workspaceFolder}/Drivers/STM32L4xx_HAL_Driver/Inc",
                     "${workspaceFolder}/Drivers/STM32L4xx_HAL_Driver/Inc/Legacy",
                     "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32L4xx/Include",
-                    "${workspaceFolder}/Drivers/CMSIS/Include",
-                    ""
+                    "${workspaceFolder}/Drivers/CMSIS/Include"
                 ]
             },
             "defines": [
-                ""
+                "USE_HAL_DRIVER",
+                "STM32L476xx"
             ],
             "cStandard": "gnu11",
             "cppStandard": "gnu++11",
-            "compilerPath": "",
+            "compilerPath": "/usr/bin/arm-none-eabi-gcc",
             "compilerArgs": [
-                ""
+                "-mcpu=cortex-m4",
+                "-mthumb",
+                "-mfpu=fpv4-sp-d16",
+                "-mfloat-abi=hard"
             ]
         }
     ],
