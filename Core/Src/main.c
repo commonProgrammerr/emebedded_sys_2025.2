@@ -74,7 +74,7 @@ const uint8_t request_trigger_signal = 0x5A; // sinal de requisição de dados
 typedef struct main_data_t
 {
   uint8_t event_counter;
-  uint8_t package_data[106];
+  uint8_t package_data[101];
 } main_data_t;
 
 main_data_t main_data;
@@ -126,7 +126,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1 && system_state == WAITING_RESPONSE_STATE)
   {
-    system_state = READY_STATE;
+    uint8_t ack = 0x1;
+    HAL_UART_Transmit_IT(&huart1, &ack, 1);
   }
 }
 
@@ -138,7 +139,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     {
     case PRINT_COUNTER_STATE:
       system_state = PRINT_TABLE_STATE;
-      HAL_UART_Transmit_DMA(&huart2, main_data.package_data, 106);
+      HAL_UART_Transmit_DMA(&huart2, main_data.package_data, sizeof(main_data_t) - 1);
       break;
     case PRINT_TABLE_STATE:
     case REQUEST_TIMEOUT_STATE:
@@ -148,9 +149,16 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
       break;
     }
   }
-  else if (huart->Instance == USART1 && system_state == SENDING_REQUEST_STATE)
+  else if (huart->Instance == USART1)
   {
-    system_state = WAITING_RESPONSE_STATE;
+    if (system_state == SENDING_REQUEST_STATE)
+    {
+      system_state = WAITING_RESPONSE_STATE;
+    }
+    else if (system_state == WAITING_RESPONSE_STATE)
+    {
+      system_state = READY_STATE;
+    }
   }
 }
 
@@ -219,7 +227,7 @@ int main(void)
       // espera pela resposta
       while (system_state == WAITING_RESPONSE_STATE)
       {
-        HAL_UART_Receive_IT(&huart1, &main_data, sizeof(main_data_t));
+        HAL_UART_Receive_IT(&huart1, &main_data, 100);
         HAL_Delay(30);
       }
 
