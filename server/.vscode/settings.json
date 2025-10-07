@@ -1,0 +1,26 @@
+{
+  "files.associations": {
+    ".sequelizerc": "javascript",
+    ".stylelintrc": "json",
+    ".prettierrc": "json",
+    "*.env": "properties",
+    ".env": "shellscript",
+    "*.props": "shellscript",
+    "stdbool.h": "c",
+    "nvic.h": "c",
+    "*.tcc": "cpp",
+    "fstream": "cpp",
+    "istream": "cpp",
+    "ostream": "cpp",
+    "sstream": "cpp",
+    "sin_table.h": "c",
+    "tm4c123gh6pm.h": "c",
+    "main.h": "c",
+    "stm32l4xx_hal.h": "c",
+    "stm32l4xx_hal_conf.h": "c",
+    "stm32l4xx_hal_rcc.h": "c"
+  },
+  "cSpell.words": [
+    "stm32"
+  ]
+}
