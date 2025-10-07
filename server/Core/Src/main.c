@@ -66,7 +66,7 @@ typedef struct
 main_data_t main_data = {
     .event_counter = 0,
     .package_data = "Andre Escorel, 300508401\r\n"
-                    "Igor Baldino, 300508402\r\n"
+                    "Igor Balbino, 300508402\r\n"
                     "Lucas César, 300508403\r\n"
                     "Lucas Gonçalves, 300508404\r\n",
 };
@@ -103,6 +103,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         system_state = SYSTEM_TRANSMITING;
       HAL_UART_Receive_IT(&huart3, &request_status, 1);
     }
+    else if (system_state == SYSTEM_TRANSMITING)
+    {
+      if (request_status == 0x01)
+        system_state = SYSTEM_TRANSMITTING_END;
+
+      HAL_UART_Receive_IT(&huart3, &request_status, 1);
+    }
   }
   else
     __NOP();
@@ -116,7 +123,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     {
       HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(LD4_GPIO_Port, LD4_Pin, GPIO_PIN_SET);
-      system_state = SYSTEM_TRANSMITTING_END;
+      HAL_UART_Receive_IT(&huart3, &request_status, 1);
     }
   }
   else
@@ -157,7 +164,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
-  HAL_UART_Receive_IT(&huart3, &request_status, 1);
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
