@@ -1,5 +1,9 @@
 {
   "files.associations": {
+    "log.*": "log",
+    "run.*": "bitbake",
+    "depsig.*": "shellcheck-output",
+    "beep": "makefile",
     ".sequelizerc": "javascript",
     ".stylelintrc": "json",
     ".prettierrc": "json",
@@ -18,7 +22,8 @@
     "main.h": "c",
     "stm32l4xx_hal.h": "c",
     "stm32l4xx_hal_conf.h": "c",
-    "stm32l4xx_hal_rcc.h": "c"
+    "stm32l4xx_hal_rcc.h": "c",
+    "_malloc.h": "c"
   },
   "cSpell.words": [
     "stm32"
