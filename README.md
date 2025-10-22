@@ -1,34 +1,119 @@
-# Repositório de Sistema Embarcado 2025.2
+# Sistema Embarcado - Projeto I2C com PCF8591
 
-Este é um repositório destinado para o desenvolvimento de projetos utilizando o microcontrolador STM32L476RG na disciplina de Sistema Embarcado do curso de Eng. da Computação da Universidade de Pernambuco. O projeto está configurado para usar o toolchain GCC ARM e inclui um Makefile para compilar e gravar o firmware.
+Este projeto implementa uma interface de comunicação I2C com o módulo ADC/DAC PCF8591 utilizando o microcontrolador STM32L476RG. O sistema permite ler valores analógicos dos 4 canais de entrada (AIN0-AIN3) e controlar a saída analógica (DAC) através de comandos UART.
+
+## Funcionalidades
+
+- **Leitura de Canais Analógicos**: Lê valores dos canais AIN0, AIN1, AIN2 e AIN3 do PCF8591
+- **Controle de DAC**: Define valores de saída analógica (0-255) no PCF8591
+- **Interface UART**: Comunicação serial para envio de comandos e recebimento de dados
+- **Máquina de Estados**: Implementa controle de fluxo robusto com 6 estados distintos
+- **Comunicação I2C**: Interface com múltiplos dispositivos I2C (I2C1, I2C2, I2C3)
+
+## Comandos Disponíveis
+
+### Leitura de Canais ADC
+- **'0'**: Lê o canal AIN0
+- **'1'**: Lê o canal AIN1  
+- **'2'**: Lê o canal AIN2
+- **'3'**: Lê o canal AIN3
+
+### Controle do DAC
+- **'w' + 3 dígitos**: Define valor do DAC (exemplo: "w128" para valor 128)
+
+## Máquina de Estados
+
+O projeto implementa uma máquina de estados finita com 6 estados para gerenciar a comunicação:
+
+![Diagrama de Estados](docs/images/Diagrama%20de%20estados.png)
+
+*Diagrama detalhado disponível em [docs/state_machine_diagram.md](docs/state_machine_diagram.md)*
+
+### Estados da Máquina:
+- **Estado 1 (IDLE)**: Aguarda comandos UART do usuário
+- **Estado 2 (I2C_TX)**: Envia configuração I2C para o ADC do PCF8591
+- **Estado 3 (I2C_RX)**: Recebe dados do ADC do PCF8591
+- **Estado 4 (UART_TX)**: Transmite resultados via UART para o usuário
+- **Estado 5 (UART_RX)**: Recebe valor do DAC (3 bytes) via UART
+- **Estado 6 (I2C_DAC)**: Envia configuração e valor do DAC para o PCF8591
+
+## Hardware Requerido
+
+- **Microcontrolador**: STM32L476RG (Nucleo-L476RG)
+- **Módulo ADC/DAC**: PCF8591 (endereço I2C: 0x48)
+- **Conexões I2C**: SDA e SCL conectados ao I2C1 do STM32
+- **UART**: USART2 para comunicação serial (115200 baud)
 
 ## Estrutura do Projeto
 
 ```
 .
-├── Core/                     # Código-fonte da aplicação
-├── Drivers/                  # Drivers HAL e CMSIS
-├── build/                    # Diretório de saída da compilação
-├── setup_env.sh              # Script para configurar o ambiente de desenvolvimento
-├── Makefile                  # Sistema de build
-├── STM32L476XX_FLASH.ld      # Script de link
-├── startup_stm32l476xx.s     # Arquivo de inicialização em assembly
-└── emebedded_sys_2025.2.ioc  # Arquivo do projeto STM32CubeMX
+├── Core/
+│   ├── Inc/                  # Arquivos de cabeçalho
+│   │   ├── main.h           # Definições principais
+│   │   ├── stm32l4xx_hal_conf.h
+│   │   └── stm32l4xx_it.h   # Tratadores de interrupção
+│   └── Src/                 # Código-fonte
+│       ├── main.c           # Programa principal
+│       ├── stm32l4xx_hal_msp.c
+│       ├── stm32l4xx_it.c   # Implementação das interrupções
+│       └── system_stm32l4xx.c
+├── Drivers/                 # Drivers HAL e CMSIS
+├── build/                   # Diretório de saída da compilação
+├── docs/                    # Documentação do projeto
+├── Makefile                 # Sistema de build
+├── STM32L476XX_FLASH.ld     # Script de linker
+├── startup_stm32l476xx.s    # Arquivo de inicialização
+└── emebedded_sys_2025.2.ioc # Configuração do STM32CubeMX
 ```
 
-## Contribuindo
+## Como Usar
 
-Para contribuir com este projeto, siga estas diretrizes:
+### 1. Configuração Inicial
+Após compilar e gravar o firmware:
 
-1. **Crie um Novo Branch**: Para cada atividade ou funcionalidade, crie um novo branch a partir do branch `main`. Use um nome descritivo para o seu branch, como `feature/nome-da-funcionalidade` ou `bugfix/nome-do-bug`.
+1. Conecte o módulo PCF8591 ao STM32L476RG via I2C1
+2. Abra um terminal serial (115200 baud, 8N1)
+3. O sistema exibirá: "Enter command (0-3 for AIN, w for DAC):"
 
-2. **Atualize o Projeto com o STM32CubeMX**: No seu novo branch, use o programa STM32CubeMX para atualizar a configuração do projeto.
+### 2. Lendo Canais ADC
+Para ler um canal analógico, envie o número do canal:
+```
+> 0
+AIN0: 128
 
-3. **Faça Commit e Envie as Alterações**: Faça commit das suas alterações com mensagens claras e descritivas. Envie seu branch para o repositório remoto.
+> 2  
+AIN2: 255
+```
 
-4. **Envie um Pull Request**: Quando suas alterações estiverem completas, envie um pull request para revisão. Certifique-se de que seu branch está atualizado com o branch `main` antes de enviar.
+### 3. Controlando o DAC
+Para definir o valor do DAC, use o comando 'w' seguido do valor:
+```
+> w128
+Valor do DAC: 128
 
-**Importante**: Certifique-se de abrir o arquivo `emebedded_sys_2025.2.ioc` presente dentro da raiz do projeto para que todas as alterações sejam salvas e exportadas corretamente.
+> w255
+Valor do DAC: 255
+```
+
+### 4. Monitoramento de Estados
+O sistema exibe o estado atual da máquina de estados para debug:
+```
+Current state: 1
+Enter command (0-3 for AIN, w for DAC):
+Current state: 2
+Current state: 3
+Current state: 4
+AIN1: 156
+Current state: 1
+```
+
+## Configuração do PCF8591
+
+- **Endereço I2C**: 0x48 (padrão)
+- **Canais ADC**: A0, A1, A2, A3 (8-bit, 0-255)
+- **DAC**: Saída analógica de 8-bit (0-255)
+- **Alimentação**: 3.3V ou 5V
 
 ## Pré-requisitos
 
@@ -103,8 +188,41 @@ Você pode modificar essas configurações no `Makefile`.
 
 Este projeto está licenciado sob a Licença MIT. Consulte o arquivo `LICENSE` para mais detalhes.
 
+## Desenvolvimento
+
+### Contribuindo
+Para contribuir com este projeto:
+
+1. **Crie um Novo Branch**: Use nomes descritivos como `feature/nome-da-funcionalidade`
+2. **Atualize com STM32CubeMX**: Use o arquivo `.ioc` para configurações de hardware
+3. **Teste Funcionalidades**: Verifique os estados da máquina e comunicação I2C/UART
+4. **Envie Pull Request**: Mantenha o branch atualizado com `main`
+
+### Debugging
+- Use `HAL_UART_Transmit` para debug via serial
+- Monitor os estados da máquina através da saída UART
+- Verifique timeouts de I2C para detectar problemas de hardware
+
+## Possíveis Melhorias
+
+- [ ] Implementar buffer circular para comandos UART
+- [ ] Adicionar verificação de CRC para comandos
+- [ ] Suporte a múltiplos módulos PCF8591
+- [ ] Interface web via ESP32 para controle remoto
+- [ ] Logging de dados com timestamp
+- [ ] Calibração automática dos canais ADC
+
+## Troubleshooting
+
+### Problemas Comuns:
+1. **I2C não responde**: Verifique conexões SDA/SCL e pull-ups
+2. **Valores ADC incorretos**: Confirme alimentação do PCF8591
+3. **UART não funciona**: Verifique baudrate e configuração do terminal
+4. **Estados travados**: Reset do sistema ou verificar timeouts
+
 ## Referências
 
+- [Datasheet PCF8591](https://www.nxp.com/docs/en/data-sheet/PCF8591.pdf)
+- [STM32L476RG Reference Manual](https://www.st.com/resource/en/reference_manual/rm0351-stm32l47xxx-stm32l48xxx-stm32l49xxx-and-stm32l4axxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [Documentação STM32 HAL](https://www.st.com/en/embedded-software/stm32cube.html)
-- [Biblioteca CMSIS DSP](https://arm-software.github.io/CMSIS_5/DSP/html/index.html)
-- [Ferramentas ST-Link](https://github.com/stlink-org/stlink)
+- [I2C Protocol Guide](https://www.ti.com/lit/an/slva704/slva704.pdf)
