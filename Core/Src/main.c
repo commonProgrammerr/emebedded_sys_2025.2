@@ -38,13 +38,6 @@ typedef enum
 
 typedef enum
 {
-  PCF8591_OK = 1,
-  PCF8591_WAITING = 4,
-  PCF8591_IDLE = 3
-} PCF8591_Status;
-
-typedef enum
-{
   SYSTEM_STATE_1 = 0,
   SYSTEM_STATE_2 = 1,
   SYSTEM_STATE_3 = 2,
@@ -58,8 +51,7 @@ typedef enum
 /* USER CODE BEGIN PD */
 #define PCF8591_ADDRESS (0x48 << 1) // Shifted PCF8591 I2C address
 #define I2C_INTERFACE hi2c1
-#define READ_CMD_SIZE 10 // sizeof("Read_AIN0")
-#define SET_CMD_SIZE 12  // sizeof("Set_DAC_255")
+#define CMD_BUFFER_SIZE 50
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -83,13 +75,16 @@ DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
-volatile PCF8591_Status pcf8591_status = PCF8591_IDLE;
 volatile SystemState system_state = SYSTEM_STATE_1;
-volatile uint8_t channels[4];
-volatile uint16_t current_command = 0;
-volatile uint8_t dac_value = 0;
-char dca_str[3];
-
+volatile PCF8591_Channel channel_index = PCF8591_A0;
+uint8_t channels[4];
+uint8_t current_command = 0;
+uint8_t dac_value = 0;
+char dac_str[3];
+char cmd_buffer[CMD_BUFFER_SIZE];
+volatile uint8_t cmd_index = 0;
+volatile uint8_t cmd_ready = 0;
+uint8_t rx_char;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -107,9 +102,9 @@ static void MX_I2C3_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void PCF8591_UpdateAnalogChannelData(PCF8591_Channel channel)
+void PCF8591_UpdateAnalogChannelData(void)
 {
-  uint8_t config_byte = 0x40 | (channel & 0x03); // Select the channel (A0, A1, A2, A3)
+  uint8_t config_byte = 0x40 | (channel_index & 0x03); // Select the channel (A0, A1, A2, A3)
   uint8_t analog_data[2];
   // Send configuration byte to select the ADC channel
   HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, &config_byte, 1);
@@ -127,7 +122,7 @@ void PCF8591_UpdateAnalogChannelData(PCF8591_Channel channel)
     __NOP();
 
   // Save the second byte which contains the valid ADC reading
-  channels[channel] = analog_data[1];
+  channels[channel_index] = analog_data[1];
 }
 
 void PCF8591_SetAnalogOutput(uint8_t dac_output)
@@ -182,27 +177,53 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2)
   {
-    if (system_state == SYSTEM_STATE_1)
+    // Check if we received the terminator character
+    if (rx_char == '\n' || rx_char == '\r' || rx_char == '\0') // Your terminator
     {
-      if (current_command == 'w')
-      {
-        system_state = SYSTEM_STATE_5;
-        HAL_UART_Receive_DMA(&huart2, (uint8_t *)&dca_str, 3); // receive the rest of bytes (dac value) m
-      }
-      else
-      {
-        system_state = SYSTEM_STATE_2; // Reception complete
-        HAL_UART_Receive_IT(&huart2, (uint8_t *)&current_command, 1);
-      }
+      cmd_buffer[cmd_index] = '\0'; // Null terminate
+      cmd_ready = 1; // Signal that command is ready
+      cmd_index = 0; // Reset for next command
     }
-    else if (system_state == SYSTEM_STATE_5)
+    else if (cmd_index < CMD_BUFFER_SIZE - 1)
     {
-      dac_value = (uint8_t)(atoi(dca_str) << 1) >> 1;
-      system_state = SYSTEM_STATE_6; // Reception complete
+      cmd_buffer[cmd_index++] = rx_char;
     }
+    
+    // Continue receiving next character
+    HAL_UART_Receive_IT(&huart2, &rx_char, 1);
   }
 }
 
+void process_uart_commands(void)
+{
+  if (cmd_ready)
+  {
+    cmd_ready = 0;
+    
+    // Process the complete command
+    if (strncmp(cmd_buffer, "Read_AIN", 8) == 0)
+    {
+      // Handle read command
+      char channel = cmd_buffer[8]; // Get channel number
+      if (channel >= '0' && channel <= '3')
+      {
+        current_command = 'r';
+        channel_index = (PCF8591_Channel)(channel - '0');
+        system_state = SYSTEM_STATE_2;
+      } else
+        current_command = 0; // Invalid channel
+    }
+    else if (strncmp(cmd_buffer, "Set_DAC_", 8) == 0)
+    {
+      // Handle DAC command
+      dac_value = atoi(&cmd_buffer[8]);
+      current_command = 'w';
+      system_state = SYSTEM_STATE_6;
+    }
+  } else {
+    HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -251,7 +272,7 @@ int main(void)
     if (last_state != system_state)
     {
       last_state = system_state;
-      snprintf(tx_buff, sizeof(tx_buff), "Current state: %d\n\r", system_state + 1);
+      snprintf(tx_buff, sizeof(tx_buff), "[debug] Current state: %d\n\r", system_state + 1);
       HAL_UART_Transmit(&huart2, (uint8_t *)tx_buff, strlen(tx_buff), HAL_MAX_DELAY);
       if (system_state == SYSTEM_STATE_1)
       {
@@ -261,25 +282,25 @@ int main(void)
     switch (system_state)
     {
     case SYSTEM_STATE_1:
-      HAL_UART_Receive_DMA(&huart2, (uint8_t *)&current_command, 1);
-      HAL_Delay(100); // Small delay to ensure data is ready
+      process_uart_commands();
+      HAL_Delay(100); // Delay to ensure data is ready
     case SYSTEM_STATE_3:
     case SYSTEM_STATE_5:
       break;
     case SYSTEM_STATE_2:
-      PCF8591_UpdateAnalogChannelData((PCF8591_Channel)(current_command - '0'));
+      PCF8591_UpdateAnalogChannelData();
       HAL_Delay(10); // Small delay to ensure data is ready
       break;
     case SYSTEM_STATE_6:
       PCF8591_SetAnalogOutput(dac_value);
       HAL_Delay(10); // Small delay to ensure data is ready
     case SYSTEM_STATE_4:
-      char tx_buff[100];
-      if (current_command != 'w')
-        sprintf(tx_buff, "AIN%d: %d\n", current_command - '0', channels[current_command - '0']);
-      else
+      if (current_command == 'r')
+        sprintf(tx_buff, "AIN%d: %d\n", channel_index, channels[channel_index]);
+      else if (current_command == 'w')
         sprintf(tx_buff, "Valor do DAC: %d\n", dac_value);
-
+      else
+        break;
       HAL_UART_Transmit_IT(&huart2, (uint8_t *)tx_buff, strlen(tx_buff));
       HAL_Delay(10);
       break;
