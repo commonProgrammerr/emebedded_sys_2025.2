@@ -57,6 +57,9 @@ typedef enum
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define PCF8591_ADDRESS (0x48 << 1) // Shifted PCF8591 I2C address
+#define I2C_INTERFACE hi2c1
+#define READ_CMD_SIZE 10 // sizeof("Read_AIN0")
+#define SET_CMD_SIZE 12  // sizeof("Set_DAC_255")
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -66,6 +69,14 @@ typedef enum
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c2;
+I2C_HandleTypeDef hi2c3;
+DMA_HandleTypeDef hdma_i2c1_rx;
+DMA_HandleTypeDef hdma_i2c1_tx;
+DMA_HandleTypeDef hdma_i2c2_rx;
+DMA_HandleTypeDef hdma_i2c2_tx;
+DMA_HandleTypeDef hdma_i2c3_rx;
+DMA_HandleTypeDef hdma_i2c3_tx;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
@@ -77,6 +88,7 @@ volatile SystemState system_state = SYSTEM_STATE_1;
 volatile uint8_t channels[4];
 volatile uint16_t current_command = 0;
 volatile uint8_t dac_value = 0;
+char dca_str[3];
 
 /* USER CODE END PV */
 
@@ -86,6 +98,8 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_I2C2_Init(void);
+static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -93,51 +107,27 @@ static void MX_I2C1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void next_state(void)
-{
-  switch (system_state)
-  {
-  case SYSTEM_STATE_1:
-  case SYSTEM_STATE_2:
-  case SYSTEM_STATE_3:
-  case SYSTEM_STATE_5:
-    system_state++;
-    break;
-  case SYSTEM_STATE_4:
-    break;
-    system_state = SYSTEM_STATE_1;
-    break;
-  case SYSTEM_STATE_6:
-    system_state = SYSTEM_STATE_4;
-    break;
-  default:
-    system_state = SYSTEM_STATE_1;
-    break;
-  }
-}
-
 void PCF8591_UpdateAnalogChannelData(PCF8591_Channel channel)
 {
   uint8_t config_byte = 0x40 | (channel & 0x03); // Select the channel (A0, A1, A2, A3)
   uint8_t analog_data[2];
   // Send configuration byte to select the ADC channel
-  HAL_I2C_Master_Transmit_IT(&hi2c1, PCF8591_ADDRESS, &config_byte, 1);
+  HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, &config_byte, 1);
   HAL_Delay(1); // Small delay to allow ADC to settle
 
-  while (pcf8591_status == PCF8591_IDLE)
-    ;           // Wait if I2C is busy
-  HAL_Delay(1); // Small delay to ensure data is ready
+  // wait transmission end
+  while (system_state == SYSTEM_STATE_2)
+    __NOP();
 
   // Read two bytes: first byte is a dummy, second byte is the actual analog value
-  HAL_I2C_Master_Receive_IT(&hi2c1, PCF8591_ADDRESS, analog_data, 2);
+  HAL_I2C_Master_Receive_IT(&I2C_INTERFACE, PCF8591_ADDRESS, analog_data, 2);
 
-  while (pcf8591_status == PCF8591_WAITING) // Wait if I2C is waiting
-    HAL_Delay(1);                           // Small delay to ensure data is ready
+  // wait receive end
+  while (system_state == SYSTEM_STATE_3)
+    __NOP();
 
-  // Return the second byte which contains the valid ADC reading
+  // Save the second byte which contains the valid ADC reading
   channels[channel] = analog_data[1];
-
-  pcf8591_status = PCF8591_IDLE; // Reset status to IDLE
 }
 
 void PCF8591_SetAnalogOutput(uint8_t dac_output)
@@ -147,50 +137,43 @@ void PCF8591_SetAnalogOutput(uint8_t dac_output)
       config_byte,
       dac_output};
   // Send configuration byte to select the ADC channel
-  HAL_I2C_Master_Transmit_IT(&hi2c1, PCF8591_ADDRESS, send_data, 2);
+  HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, send_data, 2);
   HAL_Delay(1); // Small delay to allow ADC to settle
 
-  while (pcf8591_status == PCF8591_IDLE)
-    ;           // Wait if I2C is busy
-  HAL_Delay(1); // Small delay to ensure data is ready
-
-  pcf8591_status = PCF8591_IDLE; // Reset status to IDLE
+  // wait transmission end
+  while (system_state == SYSTEM_STATE_6)
+    __NOP();
 }
 
 void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
   if (hi2c->Instance == I2C1)
   {
-    if (pcf8591_status == PCF8591_IDLE)
-      pcf8591_status = PCF8591_WAITING; // Transmission complete
-
+    // Transmission complete. Go to next state
     if (system_state == SYSTEM_STATE_2)
-      system_state = SYSTEM_STATE_3; // Transmission complete
+      system_state = SYSTEM_STATE_3;
     else if (system_state == SYSTEM_STATE_6)
-      system_state = SYSTEM_STATE_4; // Transmission complete
+      system_state = SYSTEM_STATE_4;
   }
 }
 
 void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
-  if (hi2c->Instance == I2C1)
+  if (hi2c->Instance == I2C1) // Reception complete
   {
-    if (pcf8591_status == PCF8591_WAITING)
-      pcf8591_status = PCF8591_OK; // Transmission complete
-
     if (system_state == SYSTEM_STATE_3)
-      system_state = SYSTEM_STATE_4; // Transmission complete
+      system_state = SYSTEM_STATE_4; // go to next state
   }
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == USART2)
+  if (huart->Instance == USART2) // Transmission complete
   {
     if (system_state == SYSTEM_STATE_4)
     {
-      current_command = 0;
-      system_state = SYSTEM_STATE_1; // Transmission complete
+      current_command = 0;           // reset command flag
+      system_state = SYSTEM_STATE_1; // back to initial state
     }
   }
 }
@@ -201,23 +184,20 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   {
     if (system_state == SYSTEM_STATE_1)
     {
-      if (huart->pRxBuffPtr[0] == 'w')
+      if (current_command == 'w')
       {
         system_state = SYSTEM_STATE_5;
-        char dac_str[huart->RxXferCount];
-        HAL_UART_Receive_IT(&huart2, (uint8_t *)&dac_str, huart->RxXferCount);
+        HAL_UART_Receive_DMA(&huart2, (uint8_t *)&dca_str, 3); // receive the rest of bytes (dac value) m
       }
-      else if (huart->pRxBuffPtr[0] >= '0' && huart->pRxBuffPtr[0] <= '3')
-        system_state = SYSTEM_STATE_2; // Reception complete
       else
+      {
+        system_state = SYSTEM_STATE_2; // Reception complete
         HAL_UART_Receive_IT(&huart2, (uint8_t *)&current_command, 1);
+      }
     }
     else if (system_state == SYSTEM_STATE_5)
     {
-      uint16_t received_size = huart->RxXferSize - huart->RxXferCount;
-      char dac_str[received_size];
-      memcpy(dac_str, huart->pRxBuffPtr, received_size);
-      dac_value = (uint8_t)atoi(dac_str);
+      dac_value = (uint8_t)(atoi(dca_str) << 1) >> 1;
       system_state = SYSTEM_STATE_6; // Reception complete
     }
   }
@@ -257,20 +237,34 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_I2C1_Init();
+  MX_I2C2_Init();
+  MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  char tx_buff[100];
+  SystemState last_state = SYSTEM_STATE_1;
   while (1)
   {
+    if (last_state != system_state)
+    {
+      last_state = system_state;
+      snprintf(tx_buff, sizeof(tx_buff), "Current state: %d\n\r", system_state + 1);
+      HAL_UART_Transmit(&huart2, (uint8_t *)tx_buff, strlen(tx_buff), HAL_MAX_DELAY);
+      if (system_state == SYSTEM_STATE_1)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)"Enter command (0-3 for AIN, w for DAC): \n\r", 43, HAL_MAX_DELAY);
+      }
+    }
     switch (system_state)
     {
     case SYSTEM_STATE_1:
-      HAL_UART_Receive_IT(&huart2, (uint8_t *)&current_command, 1);
+      HAL_UART_Receive_DMA(&huart2, (uint8_t *)&current_command, 1);
+      HAL_Delay(100); // Small delay to ensure data is ready
     case SYSTEM_STATE_3:
     case SYSTEM_STATE_5:
-      HAL_Delay(100); // Small delay to ensure data is ready
       break;
     case SYSTEM_STATE_2:
       PCF8591_UpdateAnalogChannelData((PCF8591_Channel)(current_command - '0'));
@@ -364,7 +358,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00B10E24;
+  hi2c1.Init.Timing = 0x10D19CE4;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -390,13 +384,103 @@ static void MX_I2C1_Init(void)
   {
     Error_Handler();
   }
-
-  /** I2C Fast mode Plus enable
-   */
-  HAL_I2CEx_EnableFastModePlus(I2C_FASTMODEPLUS_I2C1);
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+}
+
+/**
+ * @brief I2C2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x10D19CE4;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+   */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+   */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
+}
+
+/**
+ * @brief I2C3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x10D19CE4;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+   */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+   */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
 }
 
 /**
@@ -441,14 +525,33 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+  /* DMA1_Channel3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
   /* DMA1_Channel6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
   /* DMA1_Channel7_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
+  /* DMA2_Channel6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel6_IRQn);
+  /* DMA2_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel7_IRQn);
 }
 
 /**
