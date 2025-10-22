@@ -4,38 +4,57 @@ Este projeto implementa uma interface de comunicação I2C com o módulo ADC/DAC
 
 ## Funcionalidades
 
+- **Processamento de Comandos Baseado em Strings**: Sistema robusto de comandos textuais para melhor usabilidade
 - **Leitura de Canais Analógicos**: Lê valores dos canais AIN0, AIN1, AIN2 e AIN3 do PCF8591
 - **Controle de DAC**: Define valores de saída analógica (0-255) no PCF8591
 - **Interface UART**: Comunicação serial para envio de comandos e recebimento de dados
-- **Máquina de Estados**: Implementa controle de fluxo robusto com 6 estados distintos
+- **Controle de Fluxo**: Implementa lógica de estados para operações I2C e UART
 - **Comunicação I2C**: Interface com múltiplos dispositivos I2C (I2C1, I2C2, I2C3)
+- **Debug Avançado**: Saídas de debug com prefixo `[debug]` para monitoramento do sistema
 
 ## Comandos Disponíveis
 
+O sistema agora utiliza **comandos baseados em strings** para melhor clareza e funcionalidade expandida.
+
 ### Leitura de Canais ADC
-- **'0'**: Lê o canal AIN0
-- **'1'**: Lê o canal AIN1  
-- **'2'**: Lê o canal AIN2
-- **'3'**: Lê o canal AIN3
+- **`Read_AIN0`**: Lê o canal AIN0
+- **`Read_AIN1`**: Lê o canal AIN1  
+- **`Read_AIN2`**: Lê o canal AIN2
+- **`Read_AIN3`**: Lê o canal AIN3
 
 ### Controle do DAC
-- **'w' + 3 dígitos**: Define valor do DAC (exemplo: "w128" para valor 128)
+- **`Set_DAC_<VALOR>`**: Define valor do DAC (0-255)
+  - Exemplo: `Set_DAC_128` para valor 128
+  - Exemplo: `Set_DAC_255` para valor máximo
 
-## Máquina de Estados
+## Arquitetura do Sistema
 
-O projeto implementa uma máquina de estados finita com 6 estados para gerenciar a comunicação:
+O sistema implementa controle de fluxo para gerenciar a comunicação I2C e processamento de comandos UART:
 
-![Diagrama de Estados](docs/images/Diagrama%20de%20estados.png)
+### Diagrama Geral do Sistema
+![Diagrama de Estados do Sistema](docs/images/Diagarama%20de%20estados%20sistema.svg)
 
-*Diagrama detalhado disponível em [docs/state_machine_diagram.md](docs/state_machine_diagram.md)*
+### Processamento de Comandos
+![Diagrama de Estados dos Comandos](docs/images/Diagrama%20de%20estados%20cmd.svg)
 
-### Estados da Máquina:
-- **Estado 1 (IDLE)**: Aguarda comandos UART do usuário
-- **Estado 2 (I2C_TX)**: Envia configuração I2C para o ADC do PCF8591
-- **Estado 3 (I2C_RX)**: Recebe dados do ADC do PCF8591
-- **Estado 4 (UART_TX)**: Transmite resultados via UART para o usuário
-- **Estado 5 (UART_RX)**: Recebe valor do DAC (3 bytes) via UART
-- **Estado 6 (I2C_DAC)**: Envia configuração e valor do DAC para o PCF8591
+*Documentação detalhada disponível em [docs/state_machine_diagram.md](docs/state_machine_diagram.md)*
+
+### Descrição dos Diagramas:
+
+**Diagrama do Sistema**: Mostra o fluxo de controle que gerencia as operações de I2C e UART do sistema.
+
+**Diagrama de Comandos**: Detalha como o sistema processa os comandos baseados em strings recebidos via UART.
+
+### Principais Funcionalidades:
+- **Processamento de Comandos**: Sistema robusto de parsing de strings UART
+- **Comunicação I2C**: Interface otimizada com PCF8591 para ADC/DAC
+- **Estados de Controle**: Gestão eficiente de fluxo de dados
+- **Validação de Comandos**: Verificação automática de sintaxe e parâmetros
+
+### Fluxos de Operação:
+- **Leitura ADC**: Comando `Read_AIN<N>` → Configuração I2C → Leitura de dados → Resposta UART
+- **Configuração DAC**: Comando `Set_DAC_<VALOR>` → Configuração I2C → Confirmação UART
+- **Processamento de Comandos**: Recepção UART → Parsing de strings → Validação → Execução
 
 ## Hardware Requerido
 
@@ -77,35 +96,35 @@ Após compilar e gravar o firmware:
 3. O sistema exibirá: "Enter command (0-3 for AIN, w for DAC):"
 
 ### 2. Lendo Canais ADC
-Para ler um canal analógico, envie o número do canal:
+Para ler um canal analógico, envie o comando completo seguido de Enter:
 ```
-> 0
+> Read_AIN0
 AIN0: 128
 
-> 2  
+> Read_AIN2
 AIN2: 255
 ```
 
 ### 3. Controlando o DAC
-Para definir o valor do DAC, use o comando 'w' seguido do valor:
+Para definir o valor do DAC, use o comando `Set_DAC_` seguido do valor:
 ```
-> w128
+> Set_DAC_128
 Valor do DAC: 128
 
-> w255
+> Set_DAC_255
 Valor do DAC: 255
 ```
 
-### 4. Monitoramento de Estados
-O sistema exibe o estado atual da máquina de estados para debug:
+### 4. Monitoramento do Sistema
+O sistema exibe informações de debug em tempo real com prefixo `[debug]`:
 ```
-Current state: 1
+[debug] Current state: 1
 Enter command (0-3 for AIN, w for DAC):
-Current state: 2
-Current state: 3
-Current state: 4
-AIN1: 156
-Current state: 1
+[debug] Current state: 2
+[debug] Current state: 3
+[debug] Current state: 4
+AIN0: 145
+[debug] Current state: 1
 ```
 
 ## Configuração do PCF8591
@@ -195,22 +214,13 @@ Para contribuir com este projeto:
 
 1. **Crie um Novo Branch**: Use nomes descritivos como `feature/nome-da-funcionalidade`
 2. **Atualize com STM32CubeMX**: Use o arquivo `.ioc` para configurações de hardware
-3. **Teste Funcionalidades**: Verifique os estados da máquina e comunicação I2C/UART
+3. **Teste Funcionalidades**: Verifique o processamento de comandos e comunicação I2C/UART
 4. **Envie Pull Request**: Mantenha o branch atualizado com `main`
 
 ### Debugging
 - Use `HAL_UART_Transmit` para debug via serial
-- Monitor os estados da máquina através da saída UART
+- Monitor o sistema através das mensagens de debug UART
 - Verifique timeouts de I2C para detectar problemas de hardware
-
-## Possíveis Melhorias
-
-- [ ] Implementar buffer circular para comandos UART
-- [ ] Adicionar verificação de CRC para comandos
-- [ ] Suporte a múltiplos módulos PCF8591
-- [ ] Interface web via ESP32 para controle remoto
-- [ ] Logging de dados com timestamp
-- [ ] Calibração automática dos canais ADC
 
 ## Troubleshooting
 
@@ -218,7 +228,9 @@ Para contribuir com este projeto:
 1. **I2C não responde**: Verifique conexões SDA/SCL e pull-ups
 2. **Valores ADC incorretos**: Confirme alimentação do PCF8591
 3. **UART não funciona**: Verifique baudrate e configuração do terminal
-4. **Estados travados**: Reset do sistema ou verificar timeouts
+4. **Sistema travado**: Reset do sistema ou verificar timeouts de I2C
+5. **Comandos não reconhecidos**: Certifique-se de usar a sintaxe correta (`Read_AIN0` ou `Set_DAC_128`)
+6. **Comandos incompletos**: Sempre termine comandos com Enter (\n) ou Carriage Return (\r)
 
 ## Referências
 
