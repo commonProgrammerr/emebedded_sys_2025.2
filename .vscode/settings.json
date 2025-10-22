@@ -26,6 +26,7 @@
     "_malloc.h": "c"
   },
   "cSpell.words": [
+    "huart",
     "stm32"
   ]
 }
