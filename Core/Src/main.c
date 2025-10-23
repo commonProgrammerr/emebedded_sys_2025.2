@@ -178,7 +178,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   if (huart->Instance == USART2)
   {
     // Check if we received the terminator character
-    if (rx_char == '\n' || rx_char == '\r' || rx_char == '\0') // Your terminator
+    if (rx_char == '\n' || rx_char == '\r' || rx_char == ';' || rx_char == '\0') // Your terminator
     {
       cmd_buffer[cmd_index] = '\0'; // Null terminate
       cmd_ready = 1; // Signal that command is ready
@@ -219,6 +219,10 @@ void process_uart_commands(void)
       dac_value = atoi(&cmd_buffer[8]);
       current_command = 'w';
       system_state = SYSTEM_STATE_6;
+    }
+    else {
+      // Unknown command
+      HAL_UART_Transmit(&huart2, "Unknown command\n\r", 17, HAL_MAX_DELAY);
     }
   } else {
     HAL_UART_Receive_IT(&huart2, &rx_char, 1);
@@ -276,7 +280,7 @@ int main(void)
       HAL_UART_Transmit(&huart2, (uint8_t *)tx_buff, strlen(tx_buff), HAL_MAX_DELAY);
       if (system_state == SYSTEM_STATE_1)
       {
-        HAL_UART_Transmit(&huart2, (uint8_t *)"Enter command (0-3 for AIN, w for DAC): \n\r", 43, HAL_MAX_DELAY);
+        HAL_UART_Transmit(&huart2, (uint8_t *)"Enter command: \n\r", 43, HAL_MAX_DELAY);
       }
     }
     switch (system_state)
