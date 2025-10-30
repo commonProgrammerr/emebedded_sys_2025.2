@@ -102,6 +102,29 @@ static void MX_I2C3_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// Critical section helpers for mutex-like behavior
+static inline void enter_critical(void) {
+  __disable_irq();
+}
+
+static inline void exit_critical(void) {
+  __enable_irq();
+}
+
+// Safer state transitions
+static void set_system_state(SystemState new_state) {
+  enter_critical();
+  system_state = new_state;
+  exit_critical();
+}
+
+static SystemState get_system_state(void) {
+  enter_critical();
+  SystemState state = system_state;
+  exit_critical();
+  return state;
+}
+
 void PCF8591_UpdateAnalogChannelData(void)
 {
   uint8_t config_byte = 0x40 | (channel_index & 0x03); // Select the channel (A0, A1, A2, A3)
@@ -110,16 +133,18 @@ void PCF8591_UpdateAnalogChannelData(void)
   HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, &config_byte, 1);
   HAL_Delay(1); // Small delay to allow ADC to settle
 
-  // wait transmission end
-  while (system_state == SYSTEM_STATE_2)
-    __NOP();
+  // wait transmission end with low-power idle
+  while (get_system_state() == SYSTEM_STATE_2) {
+    __WFI();  // Wait for interrupt - saves power
+  }
 
   // Read two bytes: first byte is a dummy, second byte is the actual analog value
   HAL_I2C_Master_Receive_IT(&I2C_INTERFACE, PCF8591_ADDRESS, analog_data, 2);
 
-  // wait receive end
-  while (system_state == SYSTEM_STATE_3)
-    __NOP();
+  // wait receive end with low-power idle
+  while (get_system_state() == SYSTEM_STATE_3) {
+    __WFI();  // Wait for interrupt - saves power
+  }
 
   // Save the second byte which contains the valid ADC reading
   channels[channel_index] = analog_data[1];
@@ -135,20 +160,21 @@ void PCF8591_SetAnalogOutput(uint8_t dac_output)
   HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, send_data, 2);
   HAL_Delay(1); // Small delay to allow ADC to settle
 
-  // wait transmission end
-  while (system_state == SYSTEM_STATE_6)
-    __NOP();
+  // wait transmission end with low-power idle
+  while (get_system_state() == SYSTEM_STATE_6) {
+    __WFI();  // Wait for interrupt - saves power
+  }
 }
 
 void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
   if (hi2c->Instance == I2C1)
   {
-    // Transmission complete. Go to next state
-    if (system_state == SYSTEM_STATE_2)
-      system_state = SYSTEM_STATE_3;
-    else if (system_state == SYSTEM_STATE_6)
-      system_state = SYSTEM_STATE_4;
+    // Transmission complete. Go to next state - use helper for atomic state change
+    if (get_system_state() == SYSTEM_STATE_2)
+      set_system_state(SYSTEM_STATE_3);
+    else if (get_system_state() == SYSTEM_STATE_6)
+      set_system_state(SYSTEM_STATE_4);
   }
 }
 
@@ -156,8 +182,8 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
   if (hi2c->Instance == I2C1) // Reception complete
   {
-    if (system_state == SYSTEM_STATE_3)
-      system_state = SYSTEM_STATE_4; // go to next state
+    if (get_system_state() == SYSTEM_STATE_3)
+      set_system_state(SYSTEM_STATE_4); // go to next state
   }
 }
 
@@ -165,10 +191,12 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2) // Transmission complete
   {
-    if (system_state == SYSTEM_STATE_4)
+    if (get_system_state() == SYSTEM_STATE_4)
     {
+      enter_critical();
       current_command = 0;           // reset command flag
-      system_state = SYSTEM_STATE_1; // back to initial state
+      exit_critical();
+      set_system_state(SYSTEM_STATE_1); // back to initial state
     }
   }
 }
@@ -178,17 +206,17 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   if (huart->Instance == USART2)
   {
     // Check if we received the terminator character
-    if (rx_char == '\n' || rx_char == '\r' || rx_char == ';' || rx_char == '\0') // Your terminator
+    if ((rx_char == '\n' || rx_char == '\r' || rx_char == ';') && cmd_index > 4) // Your terminator
     {
       cmd_buffer[cmd_index] = '\0'; // Null terminate
-      cmd_ready = 1; // Signal that command is ready
-      cmd_index = 0; // Reset for next command
+      cmd_ready = 1;                // Signal that command is ready
+      cmd_index = 0;                // Reset for next command
     }
     else if (cmd_index < CMD_BUFFER_SIZE - 1)
     {
       cmd_buffer[cmd_index++] = rx_char;
     }
-    
+
     // Continue receiving next character
     HAL_UART_Receive_IT(&huart2, &rx_char, 1);
   }
@@ -196,35 +224,56 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void process_uart_commands(void)
 {
-  if (cmd_ready)
+  // Read cmd_ready atomically
+  uint8_t ready;
+  enter_critical();
+  ready = cmd_ready;
+  exit_critical();
+
+  if (ready)
   {
-    cmd_ready = 0;
-    
-    // Process the complete command
+    // Process the complete command (cmd_buffer is now stable)
     if (strncmp(cmd_buffer, "Read_AIN", 8) == 0)
     {
       // Handle read command
       char channel = cmd_buffer[8]; // Get channel number
       if (channel >= '0' && channel <= '3')
       {
+        enter_critical();
         current_command = 'r';
         channel_index = (PCF8591_Channel)(channel - '0');
-        system_state = SYSTEM_STATE_2;
-      } else
+        exit_critical();
+        set_system_state(SYSTEM_STATE_2);
+      }
+      else
+      {
+        enter_critical();
         current_command = 0; // Invalid channel
+        exit_critical();
+      }
     }
     else if (strncmp(cmd_buffer, "Set_DAC_", 8) == 0)
     {
       // Handle DAC command
+      enter_critical();
       dac_value = atoi(&cmd_buffer[8]);
       current_command = 'w';
-      system_state = SYSTEM_STATE_6;
+      exit_critical();
+      set_system_state(SYSTEM_STATE_6);
     }
-    else {
+    else
+    {
       // Unknown command
-      HAL_UART_Transmit(&huart2, "Unknown command\n\r", 17, HAL_MAX_DELAY);
+      HAL_UART_Transmit(&huart2, (uint8_t*)"Unknown command\n\r", 17, HAL_MAX_DELAY);
     }
-  } else {
+    
+    // Clear ready flag atomically
+    enter_critical();
+    cmd_ready = 0;
+    exit_critical();
+  }
+  else
+  {
     HAL_UART_Receive_IT(&huart2, &rx_char, 1);
   }
 }
