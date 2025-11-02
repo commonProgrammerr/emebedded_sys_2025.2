@@ -32,7 +32,7 @@ O sistema agora utiliza **comandos baseados em strings** para melhor clareza e f
 O sistema implementa controle de fluxo para gerenciar a comunicação I2C e processamento de comandos UART:
 
 ### Diagrama Geral do Sistema
-![Diagrama de Estados do Sistema](docs/images/Diagarama%20de%20estados%20sistema.svg)
+![Diagrama de Estados do Sistema](docs/images/state_machine.jpg)
 
 ### Processamento de Comandos
 ![Diagrama de Estados dos Comandos](docs/images/Diagrama%20de%20estados%20cmd.svg)
