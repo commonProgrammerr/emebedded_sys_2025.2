@@ -38,12 +38,14 @@ typedef enum
 
 typedef enum
 {
-  SYSTEM_STATE_1 = 0,
-  SYSTEM_STATE_2 = 1,
-  SYSTEM_STATE_3 = 2,
-  SYSTEM_STATE_4 = 3,
-  SYSTEM_STATE_5 = 4,
-  SYSTEM_STATE_6 = 5
+  SYSTEM_STATE_1 = 1,
+  SYSTEM_STATE_2 = 2,
+  SYSTEM_STATE_3 = 3,
+  SYSTEM_STATE_4 = 4,
+  SYSTEM_STATE_5 = 5,
+  SYSTEM_STATE_6 = 6,
+  SYSTEM_STATE_7 = 7,
+  SYSTEM_STATE_8 = 8,
 } SystemState;
 /* USER CODE END PTD */
 
@@ -52,6 +54,56 @@ typedef enum
 #define PCF8591_ADDRESS (0x48 << 1) // Shifted PCF8591 I2C address
 #define I2C_INTERFACE hi2c1
 #define CMD_BUFFER_SIZE 50
+#define TEMPERATURE_SCREEN { \
+    0b00000000,              \
+    0b01111110,              \
+    0b00010000,              \
+    0b00010000,              \
+    0b00010000,              \
+    0b00010000,              \
+    0b0000000,               \
+    0b00000000,              \
+}
+#define TENSION_SCREEN { \
+    0b00000000,          \
+    0b01000100,          \
+    0b01000100,          \
+    0b01000100,          \
+    0b00101000,          \
+    0b00010000,          \
+    0b00000000,          \
+    0b00000000,          \
+}
+#define LIGHT_SCREEN { \
+    0b00000000,        \
+    0b01000000,        \
+    0b01000000,        \
+    0b01000000,        \
+    0b01000000,        \
+    0b01111100,        \
+    0b00000000,        \
+    0b00000000,        \
+}
+#define PLUS_SCREEN { \
+    0b00000000,       \
+    0b00000000,       \
+    0b00010000,       \
+    0b00010000,       \
+    0b01111100,       \
+    0b00010000,       \
+    0b00010000,       \
+    0b00000000,       \
+}
+#define MINUS_SCREEN { \
+    0b00000000,        \
+    0b00000000,        \
+    0b00000000,        \
+    0b00000000,        \
+    0b01111110,        \
+    0b00000000,        \
+    0b00000000,        \
+    0b00000000,        \
+}
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -61,14 +113,13 @@ typedef enum
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
-I2C_HandleTypeDef hi2c2;
-I2C_HandleTypeDef hi2c3;
 DMA_HandleTypeDef hdma_i2c1_rx;
 DMA_HandleTypeDef hdma_i2c1_tx;
-DMA_HandleTypeDef hdma_i2c2_rx;
-DMA_HandleTypeDef hdma_i2c2_tx;
-DMA_HandleTypeDef hdma_i2c3_rx;
-DMA_HandleTypeDef hdma_i2c3_tx;
+
+SPI_HandleTypeDef hspi1;
+DMA_HandleTypeDef hdma_spi1_tx;
+
+TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
@@ -85,6 +136,21 @@ char cmd_buffer[CMD_BUFFER_SIZE];
 volatile uint8_t cmd_index = 0;
 volatile uint8_t cmd_ready = 0;
 uint8_t rx_char;
+
+uint8_t timeout_counter = 0;
+
+uint8_t plus_screen[] = PLUS_SCREEN;
+uint8_t minus_screen[] = MINUS_SCREEN;
+uint8_t temperature_screen[] = TEMPERATURE_SCREEN;
+uint8_t tension_screen[] = TENSION_SCREEN;
+uint8_t light_screen[] = LIGHT_SCREEN;
+
+uint8_t *display_buffer = NULL;
+uint8_t *screens[3][3] = {
+    {plus_screen, minus_screen, temperature_screen},
+    {plus_screen, minus_screen, tension_screen},
+    {plus_screen, minus_screen, light_screen},
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,8 +159,8 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C1_Init(void);
-static void MX_I2C2_Init(void);
-static void MX_I2C3_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -103,22 +169,26 @@ static void MX_I2C3_Init(void);
 /* USER CODE BEGIN 0 */
 
 // Critical section helpers for mutex-like behavior
-static inline void enter_critical(void) {
+static inline void enter_critical(void)
+{
   __disable_irq();
 }
 
-static inline void exit_critical(void) {
+static inline void exit_critical(void)
+{
   __enable_irq();
 }
 
 // Safer state transitions
-static void set_system_state(SystemState new_state) {
+static void set_system_state(SystemState new_state)
+{
   enter_critical();
   system_state = new_state;
   exit_critical();
 }
 
-static SystemState get_system_state(void) {
+static SystemState get_system_state(void)
+{
   enter_critical();
   SystemState state = system_state;
   exit_critical();
@@ -134,16 +204,18 @@ void PCF8591_UpdateAnalogChannelData(void)
   HAL_Delay(1); // Small delay to allow ADC to settle
 
   // wait transmission end with low-power idle
-  while (get_system_state() == SYSTEM_STATE_2) {
-    __WFI();  // Wait for interrupt - saves power
+  while (get_system_state() == SYSTEM_STATE_2)
+  {
+    __WFI(); // Wait for interrupt - saves power
   }
 
   // Read two bytes: first byte is a dummy, second byte is the actual analog value
   HAL_I2C_Master_Receive_IT(&I2C_INTERFACE, PCF8591_ADDRESS, analog_data, 2);
 
   // wait receive end with low-power idle
-  while (get_system_state() == SYSTEM_STATE_3) {
-    __WFI();  // Wait for interrupt - saves power
+  while (get_system_state() == SYSTEM_STATE_3)
+  {
+    __WFI(); // Wait for interrupt - saves power
   }
 
   // Save the second byte which contains the valid ADC reading
@@ -161,8 +233,9 @@ void PCF8591_SetAnalogOutput(uint8_t dac_output)
   HAL_Delay(1); // Small delay to allow ADC to settle
 
   // wait transmission end with low-power idle
-  while (get_system_state() == SYSTEM_STATE_6) {
-    __WFI();  // Wait for interrupt - saves power
+  while (get_system_state() == SYSTEM_STATE_6)
+  {
+    __WFI(); // Wait for interrupt - saves power
   }
 }
 
@@ -194,7 +267,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     if (get_system_state() == SYSTEM_STATE_4)
     {
       enter_critical();
-      current_command = 0;           // reset command flag
+      current_command = 0; // reset command flag
       exit_critical();
       set_system_state(SYSTEM_STATE_1); // back to initial state
     }
@@ -219,6 +292,35 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
     // Continue receiving next character
     HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+  }
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM2)
+  {
+    if (get_system_state() == SYSTEM_STATE_1)
+      set_system_state(SYSTEM_STATE_8); // Move to screen update state
+    else if (get_system_state() == SYSTEM_STATE_8)
+    {
+      timeout_counter++;
+      if (timeout_counter >= 2)
+      { // e.g., 2 * 500ms = 1 second timeout
+        timeout_counter = 0;
+        set_system_state(SYSTEM_STATE_1); // Return to idle state on timeout
+      }
+    }
+  }
+}
+
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI1) // Transmission complete
+  {
+    if (get_system_state() == SYSTEM_STATE_8)
+    {
+      set_system_state(SYSTEM_STATE_1); // back to initial state
+    }
   }
 }
 
@@ -263,10 +365,24 @@ void process_uart_commands(void)
     }
     else
     {
-      // Unknown command
-      HAL_UART_Transmit(&huart2, (uint8_t*)"Unknown command\n\r", 17, HAL_MAX_DELAY);
+      enter_critical();
+      channel_index = 4;
+      if (strncmp(cmd_buffer, "Temp", 4) == 0)
+        channel_index = 1;
+      else if (strncmp(cmd_buffer, "Volt", 4) == 0)
+        channel_index = 3;
+      else if (strncmp(cmd_buffer, "LDR", 3) == 0)
+        channel_index = 0;
+      exit_critical();
+      if (channel_index != 4)
+        set_system_state(SYSTEM_STATE_6);
+      else
+      {
+        // Unknown command
+        HAL_UART_Transmit(&huart2, (uint8_t *)"Unknown command\n\r", 17, HAL_MAX_DELAY);
+      }
     }
-    
+
     // Clear ready flag atomically
     enter_critical();
     cmd_ready = 0;
@@ -311,8 +427,8 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_I2C1_Init();
-  MX_I2C2_Init();
-  MX_I2C3_Init();
+  MX_SPI1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
@@ -464,97 +580,86 @@ static void MX_I2C1_Init(void)
 }
 
 /**
- * @brief I2C2 Initialization Function
+ * @brief SPI1 Initialization Function
  * @param None
  * @retval None
  */
-static void MX_I2C2_Init(void)
+static void MX_SPI1_Init(void)
 {
 
-  /* USER CODE BEGIN I2C2_Init 0 */
+  /* USER CODE BEGIN SPI1_Init 0 */
 
-  /* USER CODE END I2C2_Init 0 */
+  /* USER CODE END SPI1_Init 0 */
 
-  /* USER CODE BEGIN I2C2_Init 1 */
+  /* USER CODE BEGIN SPI1_Init 1 */
 
-  /* USER CODE END I2C2_Init 1 */
-  hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x10D19CE4;
-  hi2c2.Init.OwnAddress1 = 0;
-  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c2.Init.OwnAddress2 = 0;
-  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 7;
+  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
+  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN SPI1_Init 2 */
 
-  /** Configure Analogue filter
-   */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Digital filter
-   */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C2_Init 2 */
-
-  /* USER CODE END I2C2_Init 2 */
+  /* USER CODE END SPI1_Init 2 */
 }
 
 /**
- * @brief I2C3 Initialization Function
+ * @brief TIM2 Initialization Function
  * @param None
  * @retval None
  */
-static void MX_I2C3_Init(void)
+static void MX_TIM2_Init(void)
 {
 
-  /* USER CODE BEGIN I2C3_Init 0 */
+  /* USER CODE BEGIN TIM2_Init 0 */
 
-  /* USER CODE END I2C3_Init 0 */
+  /* USER CODE END TIM2_Init 0 */
 
-  /* USER CODE BEGIN I2C3_Init 1 */
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-  /* USER CODE END I2C3_Init 1 */
-  hi2c3.Instance = I2C3;
-  hi2c3.Init.Timing = 0x10D19CE4;
-  hi2c3.Init.OwnAddress1 = 0;
-  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c3.Init.OwnAddress2 = 0;
-  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 7999;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 5000;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
   {
     Error_Handler();
   }
-
-  /** Configure Analogue filter
-   */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
   {
     Error_Handler();
   }
-
-  /** Configure Digital filter
-   */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C3_Init 2 */
+  /* USER CODE BEGIN TIM2_Init 2 */
 
-  /* USER CODE END I2C3_Init 2 */
+  /* USER CODE END TIM2_Init 2 */
 }
 
 /**
@@ -602,18 +707,9 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA1_Channel2_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
   /* DMA1_Channel3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
-  /* DMA1_Channel4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
-  /* DMA1_Channel5_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
   /* DMA1_Channel6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
@@ -646,21 +742,11 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
