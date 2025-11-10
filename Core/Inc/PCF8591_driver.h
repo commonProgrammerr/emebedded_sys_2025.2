@@ -13,7 +13,9 @@ typedef enum
   PCF8591_A3 = 3
 } PCF8591_Channel;
 
-typedef struct PCF8591_driver_t
+// callback handler
+typedef void (*PCF8591_TickCallback_t)(I2C_HandleTypeDef *hi2c);
+typedef struct PCF8591_driver
 {
   I2C_HandleTypeDef *hi2c;
   PCF8591_TickCallback_t tick_callback;
@@ -22,9 +24,6 @@ typedef struct PCF8591_driver_t
   uint8_t dac_value;       // Current DAC output value
   uint16_t analog_data[4]; // Buffer to hold analog channel data
 } PCF8591_driver_t;
-
-// callback handler
-typedef void (*PCF8591_TickCallback_t)(I2C_HandleTypeDef *hi2c);
 
 void PCF8591_tick(I2C_HandleTypeDef *hi2c);
 void PCF8591_tx_cplt_handler(I2C_HandleTypeDef *hi2c);

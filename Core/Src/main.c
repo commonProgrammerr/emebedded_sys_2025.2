@@ -48,7 +48,6 @@ typedef enum
 /* USER CODE BEGIN PD */
 #define I2C_INTERFACE hi2c3
 #define I2C_INTERFACE_INSTANCE I2C3
-#define CMD_BUFFER_SIZE 50
 #define TEMPERATURE_SCREEN { \
     0b00000000,              \
     0b01111110,              \
@@ -225,8 +224,8 @@ void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c)
   else if (get_system_state() == SYSTEM_STATE_7)
   {
     uint8_t i = PCF8591_get_channel_index();
-    display_buffer[0] = (channels[i] > pcf8591.analog_data[i]) ? minus_screen : plus_screen;
-    channels[i] = pcf8591.analog_data[i];
+    display_buffer[0] = (channels[i] > (pcf8591.analog_data)[i]) ? minus_screen : plus_screen;
+    channels[i] = (pcf8591.analog_data)[i];
     set_system_state(SYSTEM_STATE_8); // go to next state
   }
 }
