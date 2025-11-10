@@ -174,20 +174,10 @@ static void MX_I2C3_Init(void);
 /* USER CODE BEGIN 0 */
 
 // Critical section helpers for mutex-like behavior
-static inline void enter_critical(void)
-{
-  // __disable_irq();
-}
-
-static inline void exit_critical(void)
-{
-  // __enable_irq();
-}
 
 // Safer state transitions
 static void set_system_state(SystemState new_state)
 {
-  enter_critical();
 #ifdef DEBUG
   char msg[50];
   snprintf(msg, sizeof(msg), "[debug] State changed from %d to %d\r\n", last_state, system_state);
@@ -195,14 +185,11 @@ static void set_system_state(SystemState new_state)
 #endif
   last_state = system_state;
   system_state = new_state;
-  exit_critical();
 }
 
 static SystemState get_system_state(void)
 {
-  enter_critical();
   SystemState state = system_state;
-  exit_critical();
   return state;
 }
 
@@ -232,11 +219,8 @@ void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c)
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == USART2) // Transmission complete
-  {
-    if (get_system_state() == SYSTEM_STATE_4)
-      set_system_state(SYSTEM_STATE_1); // back to initial state
-  }
+  if (huart->Instance == USART2 && get_system_state() == SYSTEM_STATE_4) // Transmission complete
+    set_system_state(SYSTEM_STATE_1);                                    // back to initial state
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -245,15 +229,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   {
     if (get_system_state() == SYSTEM_STATE_1)
       set_system_state(SYSTEM_STATE_8); // Move to screen update state
-    // else if (get_system_state() == SYSTEM_STATE_8)
-    // {
-    //   timeout_counter++;
-    //   if (timeout_counter >= 2)
-    //   { // e.g., 2 * 500ms = 1 second timeout
-    //     timeout_counter = 0;
-    //     set_system_state(SYSTEM_STATE_1); // Return to idle state on timeout
-    //   }
-    // }
   }
 }
 
@@ -295,9 +270,7 @@ void process_uart_commands(char *cmd, uint16_t size)
     char channel = cmd[8]; // Get channel number
     if (channel >= '0' && channel <= '3')
     {
-      enter_critical();
       channel_index = (PCF8591_Channel)(channel - '0');
-      exit_critical();
       set_system_state(SYSTEM_STATE_2);
     }
     else
@@ -306,15 +279,18 @@ void process_uart_commands(char *cmd, uint16_t size)
   else if (strncmp(cmd, "Set_DAC_", 8) == 0)
   {
     // Handle DAC command
-    enter_critical();
-    dac_value = atoi(&cmd[8]);
-    exit_critical();
-    set_system_state(SYSTEM_STATE_5);
+    int dac_arg = atoi(&cmd[8]);
+    if (dac_arg > 0 && dac_arg <= 255)
+    {
+      dac_value = (uint8_t)dac_arg;
+      set_system_state(SYSTEM_STATE_5);
+    }
+    else
+      err = 1;
   }
   else
   {
     // Handle display commands
-    enter_critical();
     if (strncmp(cmd, "Temp", 4) == 0)
     {
       display_buffer[1] = temperature_screen;
@@ -332,7 +308,6 @@ void process_uart_commands(char *cmd, uint16_t size)
     }
     else
       err = 1;
-    exit_critical();
 
     if (err == 0)
       set_system_state(SYSTEM_STATE_6);
