@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "PCF8591_driver.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -28,13 +29,6 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef enum
-{
-  PCF8591_A0 = 0,
-  PCF8591_A1 = 1,
-  PCF8591_A2 = 2,
-  PCF8591_A3 = 3
-} PCF8591_Channel;
 
 typedef enum
 {
@@ -51,7 +45,6 @@ typedef enum
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PCF8591_ADDRESS (0x48 << 1) // Shifted PCF8591 I2C address
 #define I2C_INTERFACE hi2c3
 #define I2C_INTERFACE_INSTANCE I2C3
 #define CMD_BUFFER_SIZE 50
@@ -206,7 +199,6 @@ static void set_system_state(SystemState new_state)
 #endif
   last_state = system_state;
   system_state = new_state;
-
   exit_critical();
 }
 
@@ -218,74 +210,27 @@ static SystemState get_system_state(void)
   return state;
 }
 
-void PCF8591_UpdateAnalogChannelData(void)
+void PCF8591_TxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
-  uint8_t config_byte = 0x40 | (channel_index & 0x03); // Select the channel (A0, A1, A2, A3)
-  uint8_t analog_data[2];
-  // Send configuration byte to select the ADC channel
-  HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, &config_byte, 1);
-  HAL_Delay(1); // Small delay to allow ADC to settle
-
-  // wait transmission end with low-power idle
-  while (get_system_state() == SYSTEM_STATE_2 || get_system_state() == SYSTEM_STATE_6)
-  {
-    __WFI(); // Wait for interrupt - saves power
-  }
-
-  // Read two bytes: first byte is a dummy, second byte is the actual analog value
-  HAL_I2C_Master_Receive_IT(&I2C_INTERFACE, PCF8591_ADDRESS, analog_data, 2);
-
-  // wait receive end with low-power idle
-  while (get_system_state() == SYSTEM_STATE_3 || get_system_state() == SYSTEM_STATE_7)
-  {
-    __WFI(); // Wait for interrupt - saves power
-  }
-
-  if (system_state == SYSTEM_STATE_8)
-    display_buffer[0] = (channels[channel_index] > analog_data[1]) ? minus_screen : plus_screen;
-
-  channels[channel_index] = analog_data[1];
+  // Transmission complete. Go to next state
+  if (get_system_state() == SYSTEM_STATE_2)
+    set_system_state(SYSTEM_STATE_3);
+  else if (get_system_state() == SYSTEM_STATE_5)
+    set_system_state(SYSTEM_STATE_4);
+  else if (get_system_state() == SYSTEM_STATE_6)
+    set_system_state(SYSTEM_STATE_7);
 }
 
-void PCF8591_SetAnalogOutput(uint8_t dac_output)
+void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
-  uint8_t config_byte = 0b01000000; // Enable analog output
-  uint8_t send_data[2] = {
-      config_byte,
-      dac_output};
-  // Send configuration byte to select the ADC channel
-  HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, send_data, 2);
-  HAL_Delay(1); // Small delay to allow ADC to settle
-
-  // wait transmission end with low-power idle
-  while (get_system_state() == SYSTEM_STATE_5)
+  if (get_system_state() == SYSTEM_STATE_3)
+    set_system_state(SYSTEM_STATE_4); // go to next state
+  else if (get_system_state() == SYSTEM_STATE_7)
   {
-    __WFI(); // Wait for interrupt - saves power
-  }
-}
-
-void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
-{
-  if (hi2c->Instance == I2C_INTERFACE_INSTANCE)
-  {
-    // Transmission complete. Go to next state - use helper for atomic state change
-    if (get_system_state() == SYSTEM_STATE_2)
-      set_system_state(SYSTEM_STATE_3);
-    else if (get_system_state() == SYSTEM_STATE_5)
-      set_system_state(SYSTEM_STATE_4);
-    else if (get_system_state() == SYSTEM_STATE_6)
-      set_system_state(SYSTEM_STATE_7);
-  }
-}
-
-void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
-{
-  if (hi2c->Instance == I2C_INTERFACE_INSTANCE) // Reception complete
-  {
-    if (get_system_state() == SYSTEM_STATE_3)
-      set_system_state(SYSTEM_STATE_4); // go to next state
-    else if (get_system_state() == SYSTEM_STATE_7)
-      set_system_state(SYSTEM_STATE_8); // go to next state
+    uint8_t i = PCF8591_get_channel_index();
+    display_buffer[0] = (channels[i] > pcf8591.analog_data[i]) ? minus_screen : plus_screen;
+    channels[i] = pcf8591.analog_data[i];
+    set_system_state(SYSTEM_STATE_8); // go to next state
   }
 }
 
@@ -526,6 +471,7 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   char tx_buff[100];
+  PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
   set_system_state(SYSTEM_STATE_1);
   MAX7219_Init();
   HAL_TIM_Base_Start_IT(&htim2); // Start timer for periodic tasks
@@ -539,16 +485,18 @@ int main(void)
       HAL_Delay(100); // Delay to ensure data is ready
       break;
     case SYSTEM_STATE_2:
-      PCF8591_UpdateAnalogChannelData();
-      HAL_Delay(10); // Small delay to ensure data is ready
+    case SYSTEM_STATE_6:
+      PCF8591_set_channel_index(channel_index);
+      __WFI(); // Wait for interrupt - saves power
+      break;
+    case SYSTEM_STATE_3:
+    case SYSTEM_STATE_7:
+      PCF8591_read_analog_channel();
+      __WFI(); // Wait for interrupt - saves power
       break;
     case SYSTEM_STATE_5:
-      PCF8591_SetAnalogOutput(dac_value);
-      HAL_Delay(10); // Small delay to ensure data is ready
-      break;
-    case SYSTEM_STATE_6:
-      PCF8591_UpdateAnalogChannelData();
-      HAL_Delay(10); // Small delay to ensure data is ready
+      PCF8591_write_dac(dac_value);
+      __WFI(); // Wait for interrupt - saves power
       break;
     case SYSTEM_STATE_4:
       if (last_state == SYSTEM_STATE_3)
@@ -556,9 +504,9 @@ int main(void)
       else if (last_state == SYSTEM_STATE_5)
         sprintf(tx_buff, "Valor do DAC: %d\n\r", dac_value);
       else
-        break;
+        sprintf(tx_buff, "Error de execução. Transição desconhecida\n\r");
+
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)tx_buff, strlen(tx_buff));
-      HAL_Delay(10);
       break;
     case SYSTEM_STATE_8:
       current_screen = (current_screen + 1) % 2;
