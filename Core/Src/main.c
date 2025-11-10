@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "PCF8591_driver.h"
+#include "cmd_driver.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -140,15 +141,11 @@ DMA_HandleTypeDef hdma_usart2_tx;
 volatile SystemState system_state = SYSTEM_STATE_1;
 volatile SystemState last_state = SYSTEM_STATE_1;
 volatile PCF8591_Channel channel_index = PCF8591_A0;
-volatile uint8_t cmd_index = 0;
-volatile uint8_t cmd_ready = 0;
 volatile uint8_t curr_display_line = 0;
-char cmd_buffer[CMD_BUFFER_SIZE];
 
 uint8_t channels[4];
 uint8_t dac_value = 0;
 char dac_str[3];
-uint8_t rx_char;
 
 uint8_t timeout_counter = 0;
 
@@ -239,32 +236,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   if (huart->Instance == USART2) // Transmission complete
   {
     if (get_system_state() == SYSTEM_STATE_4)
-    {
-      enter_critical();
-      exit_critical();
       set_system_state(SYSTEM_STATE_1); // back to initial state
-    }
-  }
-}
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART2)
-  {
-    // Check if we received the terminator character
-    if ((rx_char == '\n' || rx_char == '\r' || rx_char == ';')) // Your terminator
-    {
-      cmd_buffer[cmd_index] = '\0'; // Null terminate
-      cmd_ready = 1;                // Signal that command is ready
-      cmd_index = 0;                // Reset for next command
-    }
-    else if (cmd_index < CMD_BUFFER_SIZE - 1)
-    {
-      cmd_buffer[cmd_index++] = rx_char;
-    }
-
-    // Continue receiving next character
-    HAL_UART_Receive_IT(&huart2, &rx_char, 1);
   }
 }
 
@@ -314,79 +286,64 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
   }
 }
 
-void process_uart_commands(void)
+void process_uart_commands(char *cmd, uint16_t size)
 {
-  // Read cmd_ready atomically
-  uint8_t ready;
-  enter_critical();
-  ready = cmd_ready;
-  exit_critical();
   uint8_t err = 0;
-  if (ready)
+  // Process the complete command (cmd_buffer is now stable)
+  if (strncmp(cmd, "Read_AIN", 8) == 0)
   {
-    // Process the complete command (cmd_buffer is now stable)
-    if (strncmp(cmd_buffer, "Read_AIN", 8) == 0)
+    // Handle read command
+    char channel = cmd[8]; // Get channel number
+    if (channel >= '0' && channel <= '3')
     {
-      // Handle read command
-      char channel = cmd_buffer[8]; // Get channel number
-      if (channel >= '0' && channel <= '3')
-      {
-        enter_critical();
-        channel_index = (PCF8591_Channel)(channel - '0');
-        exit_critical();
-        set_system_state(SYSTEM_STATE_2);
-      }
-      else
-        err = 1;
-    }
-    else if (strncmp(cmd_buffer, "Set_DAC_", 8) == 0)
-    {
-      // Handle DAC command
       enter_critical();
-      dac_value = atoi(&cmd_buffer[8]);
+      channel_index = (PCF8591_Channel)(channel - '0');
       exit_critical();
-      set_system_state(SYSTEM_STATE_5);
+      set_system_state(SYSTEM_STATE_2);
     }
     else
-    {
-      enter_critical();
-      if (strncmp(cmd_buffer, "Temp", 4) == 0)
-      {
-        display_buffer[1] = temperature_screen;
-        channel_index = 1;
-      }
-      else if (strncmp(cmd_buffer, "Volt", 4) == 0)
-      {
-        display_buffer[1] = tension_screen;
-        channel_index = 3;
-      }
-      else if (strncmp(cmd_buffer, "LDR", 3) == 0)
-      {
-        display_buffer[1] = light_screen;
-        channel_index = 0;
-      }
-      else
-        err = 1;
-      exit_critical();
-
-      if (err == 0)
-        set_system_state(SYSTEM_STATE_6);
-    }
-    if (err == 1)
-    {
-      const char error_msg[200];
-      sprintf(error_msg, "Unknown command: %s\n\r", cmd_buffer);
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)error_msg, strlen(error_msg));
-    }
-    // Clear ready flag atomically
+      err = 1;
+  }
+  else if (strncmp(cmd, "Set_DAC_", 8) == 0)
+  {
+    // Handle DAC command
     enter_critical();
-    memset(cmd_buffer, 0, CMD_BUFFER_SIZE);
-    cmd_ready = 0;
+    dac_value = atoi(&cmd[8]);
     exit_critical();
+    set_system_state(SYSTEM_STATE_5);
   }
   else
   {
-    HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+    // Handle display commands
+    enter_critical();
+    if (strncmp(cmd, "Temp", 4) == 0)
+    {
+      display_buffer[1] = temperature_screen;
+      channel_index = 1;
+    }
+    else if (strncmp(cmd, "Volt", 4) == 0)
+    {
+      display_buffer[1] = tension_screen;
+      channel_index = 3;
+    }
+    else if (strncmp(cmd, "LDR", 3) == 0)
+    {
+      display_buffer[1] = light_screen;
+      channel_index = 0;
+    }
+    else
+      err = 1;
+    exit_critical();
+
+    if (err == 0)
+      set_system_state(SYSTEM_STATE_6);
+  }
+
+  if (err == 1)
+  {
+    const char error_msg[200];
+    sprintf(error_msg, "Unknown command: %s\n\r", cmd);
+    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)error_msg, strlen(error_msg));
   }
 }
 
@@ -471,9 +428,10 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   char tx_buff[100];
-  PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
   set_system_state(SYSTEM_STATE_1);
+  PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
   MAX7219_Init();
+  cmd_driver_init(&huart2, process_uart_commands);
   HAL_TIM_Base_Start_IT(&htim2); // Start timer for periodic tasks
   SystemState local_state = get_system_state();
   while (1)
@@ -481,8 +439,7 @@ int main(void)
     switch (system_state)
     {
     case SYSTEM_STATE_1:
-      process_uart_commands();
-      HAL_Delay(100); // Delay to ensure data is ready
+      cmd_tick();
       break;
     case SYSTEM_STATE_2:
     case SYSTEM_STATE_6:
