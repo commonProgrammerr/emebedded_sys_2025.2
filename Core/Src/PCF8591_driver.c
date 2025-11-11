@@ -57,7 +57,7 @@ void PCF8591_write_dac(uint8_t value)
   uint8_t send_data[2] = {config_byte, value};
 
   // Send configuration byte to select the ADC channel
-  if (HAL_OK == HAL_I2C_Master_Transmit_IT(&pcf8591.hi2c, PCF8591_ADDRESS, send_data, 2))
+  if (HAL_OK == HAL_I2C_Master_Transmit_IT(pcf8591.hi2c, PCF8591_ADDRESS, send_data, 2))
     pcf8591.dac_value = value; // update current DAC value
   __NOP();                     // Small delay to allow ADC to settle
 }
