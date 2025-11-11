@@ -418,16 +418,16 @@ int main(void)
     case SYSTEM_STATE_2:
     case SYSTEM_STATE_6:
       PCF8591_set_channel_index(channel_index);
-      __WFI(); // Wait for interrupt - saves power
+      __WFI(); // Wait for interrupt
       break;
     case SYSTEM_STATE_3:
     case SYSTEM_STATE_7:
       PCF8591_read_analog_channel();
-      __WFI(); // Wait for interrupt - saves power
+      __WFI(); // Wait for interrupt
       break;
     case SYSTEM_STATE_5:
       PCF8591_write_dac(dac_value);
-      __WFI(); // Wait for interrupt - saves power
+      __WFI(); // Wait for interrupt
       break;
     case SYSTEM_STATE_4:
       if (last_state == SYSTEM_STATE_3)
@@ -444,7 +444,7 @@ int main(void)
       uint8_t send_data[] = {MAX7219_REG_DIGIT0, display_buffer[current_screen][curr_display_line++]};
       HAL_SPI_Transmit_DMA(&hspi1, send_data, 2);
       while (get_system_state() == SYSTEM_STATE_8)
-        __NOP(); // Wait for interrupt - saves power
+        __NOP(); // Wait for interrupt
 
       break;
     default:
