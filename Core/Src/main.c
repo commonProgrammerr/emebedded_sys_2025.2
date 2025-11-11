@@ -287,7 +287,7 @@ void process_uart_commands(char *cmd, uint16_t size)
 
   if (err == 1)
   {
-    const char error_msg[200];
+    char error_msg[200];
     sprintf(error_msg, "Unknown command: %s\n\r", cmd);
     HAL_UART_Transmit_DMA(&huart2, (uint8_t *)error_msg, strlen(error_msg));
   }
@@ -341,7 +341,6 @@ int main(void)
   cmd_driver_init(&huart2, process_uart_commands);
   HAL_TIM_Base_Start_IT(&htim2); // Start timer for periodic tasks
   
-  SystemState local_state = get_system_state();
   while (1)
   {
     switch (get_system_state())

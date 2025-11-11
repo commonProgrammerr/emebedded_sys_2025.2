@@ -1,5 +1,7 @@
 #include "MAX7219_driver.h"
 
+MAX7219_driver_t max7219;
+
 void MAX7219_Init(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin, MAX7219_Tx_CpltCallback_t tx_cplt_callback)
 {
     max7219.hspi = hspi;
