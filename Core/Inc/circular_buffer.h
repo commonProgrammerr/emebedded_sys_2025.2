@@ -16,7 +16,7 @@ extern "C"
 #endif
 
 /* Global Macro Definitions */
-#define CB_MAX_BUFFER_POOL_SIZE (64)
+#define CB_MAX_BUFFER_POOL_SIZE (1024)
 #define CB_MAX_INSTANCE_POOL_SIZE (8)
 
 /* Standard Library Header Files */
