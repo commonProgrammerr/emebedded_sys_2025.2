@@ -3,9 +3,10 @@
 
 #include "main.h"
 #include "circular_buffer.h"
+#include "string.h"
 
 #define CMD_BUFFER_SIZE 1024
-
+#define MAX_COMMAND_SIZE CMD_BUFFER_SIZE
 typedef enum
 {
   CMD_STATE_IDLE = 0,

@@ -26,7 +26,9 @@
     "_malloc.h": "c",
     "stdlib.h": "c",
     "stdio.h": "c",
-    "max7219_driver.h": "c"
+    "max7219_driver.h": "c",
+    "cmd_driver.h": "c",
+    "circular_buffer.h": "c"
   },
   "cSpell.words": [
     "huart",
