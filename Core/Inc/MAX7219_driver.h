@@ -2,6 +2,7 @@
 #define MAX7219_DRIVER_H
 
 #include "main.h"
+#include "string.h"
 
 #define MAX7219_REG_NOOP 0x00
 #define MAX7219_REG_DIGIT0 0x01
@@ -18,7 +19,7 @@
 #define MAX7219_REG_SHUTDOWN 0x0C
 #define MAX7219_REG_DISPLAYTEST 0x0F
 
-typedef (*MAX7219_Tx_CpltCallback_t)(SPI_HandleTypeDef *hspi);
+typedef void (*MAX7219_Tx_CpltCallback_t)(SPI_HandleTypeDef *hspi);
 
 typedef struct MAX7219_driver
 {
