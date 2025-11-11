@@ -27,7 +27,7 @@ void MAX7219_Init(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pi
     MAX7219_UpdateScreen((uint8_t[]){0,0,0,0,0,0,0,0});
 
     // Exit shutdown mode
-    MAX7219_Write(MAX7219_REG_SHUTDOWN, 0x01);
+    HAL_SPI_Transmit(hspi, (uint8_t[]){MAX7219_REG_SHUTDOWN, 0x01}, 2, HAL_MAX_DELAY);
 }
 
 

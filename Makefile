@@ -42,6 +42,7 @@ Core/Src/stm32l4xx_hal_msp.c \
 Core/Src/circular_buffer.c \
 Core/Src/cmd_driver.c \
 Core/Src/PCF8591_driver.c \
+Core/Src/MAX7219_driver.c \
 Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_uart.c \
 Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_uart_ex.c \
 Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal.c \
