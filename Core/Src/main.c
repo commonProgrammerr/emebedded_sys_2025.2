@@ -20,6 +20,7 @@
 #include "main.h"
 #include "PCF8591_driver.h"
 #include "cmd_driver.h"
+#include "MAX7219_driver.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -100,21 +101,6 @@ typedef enum
     0b00000000,        \
 }
 // Define the MAX7219 registers
-
-#define MAX7219_REG_NOOP 0x00
-#define MAX7219_REG_DIGIT0 0x01
-#define MAX7219_REG_DIGIT1 0x02
-#define MAX7219_REG_DIGIT2 0x03
-#define MAX7219_REG_DIGIT3 0x04
-#define MAX7219_REG_DIGIT4 0x05
-#define MAX7219_REG_DIGIT5 0x06
-#define MAX7219_REG_DIGIT6 0x07
-#define MAX7219_REG_DIGIT7 0x08
-#define MAX7219_REG_DECODEMODE 0x09
-#define MAX7219_REG_INTENSITY 0x0A
-#define MAX7219_REG_SCANLIMIT 0x0B
-#define MAX7219_REG_SHUTDOWN 0x0C
-#define MAX7219_REG_DISPLAYTEST 0x0F
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -140,14 +126,13 @@ DMA_HandleTypeDef hdma_usart2_tx;
 volatile SystemState system_state = SYSTEM_STATE_1;
 volatile SystemState last_state = SYSTEM_STATE_1;
 volatile PCF8591_Channel channel_index = PCF8591_A0;
-volatile uint8_t curr_display_line = 0;
 
 uint8_t channels[4];
 uint8_t dac_value = 0;
 char dac_str[3];
 
 uint8_t timeout_counter = 0;
-
+uint8_t updating_screen = 0;
 uint8_t plus_screen[] = PLUS_SCREEN;
 uint8_t minus_screen[] = MINUS_SCREEN;
 uint8_t temperature_screen[] = TEMPERATURE_SCREEN;
@@ -217,6 +202,15 @@ void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c)
   }
 }
 
+void MAX7219_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (get_system_state() == SYSTEM_STATE_8) // Transmission complete
+  {
+    updating_screen = 0;
+    set_system_state(SYSTEM_STATE_1); // back to initial state
+  }
+}
+
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2 && get_system_state() == SYSTEM_STATE_4) // Transmission complete
@@ -234,30 +228,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-  if (hspi->Instance == SPI1) // Transmission complete
-  {
-    // Baixa o pino LOAD/CS
-    HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, GPIO_PIN_RESET);
-    // Eleva o pino LOAD/CS
-    HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, GPIO_PIN_SET);
-
-    if (get_system_state() == SYSTEM_STATE_8)
-    {
-      if (curr_display_line < 8)
-      {
-        uint8_t *line = display_buffer[current_screen][curr_display_line];
-        uint8_t data[] = {MAX7219_REG_DIGIT0 + curr_display_line, line};
-        HAL_SPI_Transmit_DMA(hspi, data, 2);
-        curr_display_line++;
-      }
-      else
-      {
-        curr_display_line = 0;            // Reset line update
-        timeout_counter = 0;              // Reset timeout on full display update
-        set_system_state(SYSTEM_STATE_1); // back to initial state
-      }
-    }
-  }
+  if (hspi->Instance == SPI1)
+    MAX7219_TxCpltCallback(hspi);
 }
 
 void process_uart_commands(char *cmd, uint16_t size)
@@ -321,45 +293,6 @@ void process_uart_commands(char *cmd, uint16_t size)
   }
 }
 
-// Função para enviar um comando de 16 bits para o MAX7219
-void MAX7219_Write(uint16_t address, uint8_t data)
-{
-  uint8_t command[] = {address, data};
-
-  // Envia 16 bits via SPI (MSB first)
-  HAL_SPI_Transmit_DMA(&hspi1, command, 2);
-}
-
-// Inicialização
-void MAX7219_Init(void)
-{
-  HAL_Delay(100); // Aguarda estabilização do hardware
-
-  // Desativa teste de display
-  MAX7219_Write(MAX7219_REG_DISPLAYTEST, 0x00);
-
-  // Entra em modo shutdown para configurar
-  MAX7219_Write(MAX7219_REG_SHUTDOWN, 0x00);
-
-  // Configura o limite de varredura para 8 dígitos
-  MAX7219_Write(MAX7219_REG_SCANLIMIT, 0x07);
-
-  // Desativa decodificação (modo matriz)
-  MAX7219_Write(MAX7219_REG_DECODEMODE, 0x00);
-
-  // Define intensidade média
-  MAX7219_Write(MAX7219_REG_INTENSITY, 0x00);
-
-  // Limpa todos os dígitos
-  for (uint8_t i = 1; i <= 8; i++)
-  {
-    MAX7219_Write(i, 0x00);
-  }
-
-  // Sai do modo shutdown
-  MAX7219_Write(MAX7219_REG_SHUTDOWN, 0x01);
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -404,13 +337,14 @@ int main(void)
   char tx_buff[100];
   set_system_state(SYSTEM_STATE_1);
   PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
-  MAX7219_Init();
+  MAX7219_Init(&hspi1, GPIOA, GPIO_PIN_4, MAX7219_TxCpltCallback);
   cmd_driver_init(&huart2, process_uart_commands);
   HAL_TIM_Base_Start_IT(&htim2); // Start timer for periodic tasks
+  
   SystemState local_state = get_system_state();
   while (1)
   {
-    switch (system_state)
+    switch (get_system_state())
     {
     case SYSTEM_STATE_1:
       cmd_tick();
@@ -440,12 +374,12 @@ int main(void)
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)tx_buff, strlen(tx_buff));
       break;
     case SYSTEM_STATE_8:
+      updating_screen = 1;
       current_screen = (current_screen + 1) % 2;
-      uint8_t send_data[] = {MAX7219_REG_DIGIT0, display_buffer[current_screen][curr_display_line++]};
-      HAL_SPI_Transmit_DMA(&hspi1, send_data, 2);
-      while (get_system_state() == SYSTEM_STATE_8)
-        __NOP(); // Wait for interrupt
 
+      MAX7219_UpdateScreen(display_buffer[current_screen]);
+      while (updating_screen)
+        __WFI(); // Wait for interrupt
       break;
     default:
       break;
