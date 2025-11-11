@@ -10,7 +10,6 @@ struct cmd_driver
 
 cmd_driver_t cmd;
 volatile char rx_char;
-size_t cmd_size = 0;
 
 void cmd_driver_init(UART_HandleTypeDef *huart, cmd_ready_callback_t callback)
 {
@@ -36,21 +35,22 @@ void cmd_tick()
     __WFI(); // Wait for interrupt
     break;
   case CMD_STATE_READY:
-    size_t command_size = cmd_size;
-    cmd_size = 0;
-    if (cmd.callback != NULL)
-    {
-      char command_buff[command_size];
-      for (size_t i = 0; i < command_size; i++)
-        circular_buffer_pop(cmd.buffer, &command_buff[i]);
-      cmd.callback(command_buff, command_size);
-    }
+    static char command_buff[MAX_COMMAND_SIZE];
+    size_t cmd_size = 0;
+    memset(command_buff, '\0', MAX_COMMAND_SIZE);
+    for (; command_buff[cmd_size] != '\0' && cmd_size < MAX_COMMAND_SIZE; cmd_size++)
+      circular_buffer_pop(cmd.buffer, &command_buff[cmd_size]);
+
+    if (cmd.callback != NULL && cmd_size > 0) 
+      cmd.callback(command_buff, cmd_size + 1);
+
+    if (circular_buffer_empty(cmd.buffer))
+      cmd.state = CMD_STATE_IDLE;
     break;
   default:
     circular_buffer_destroy(cmd.buffer);
     cmd.buffer = circular_buffer_init(sizeof(char));
     cmd.state = CMD_STATE_IDLE;
-    cmd_size = 0;
     break;
   }
 }
@@ -61,16 +61,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   {
     char received_char = rx_char;
     // Check if we received the terminator character
-    if ((received_char == '\n' || received_char == '\r' || received_char == ';')) // Your terminator
+    if ((received_char == '\n' || received_char == ';' || received_char == ' '))
     {
       circular_buffer_push(cmd.buffer, "\0"); // Null terminate
       cmd.state = CMD_STATE_READY;
     }
     else if (circular_buffer_push(cmd.buffer, &received_char))
-    {
-      cmd_size++;
       cmd.state = CMD_STATE_RECEIVING;
-    }
 
     // Continue receiving next character
     if (HAL_OK != HAL_UART_Receive_IT(huart, &rx_char, 1))
