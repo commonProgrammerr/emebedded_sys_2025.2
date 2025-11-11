@@ -33,9 +33,8 @@ typedef struct MAX7219_driver
 
 
 void MAX7219_Init(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin, MAX7219_Tx_CpltCallback_t tx_cplt_callback);
-void MAX7219_Write(uint16_t address, uint8_t data);
 void MAX7219_TxCpltHandle(SPI_HandleTypeDef *hspi);
 void MAX7219_UpdateScreen(uint8_t new_screen[8]);
 
-static MAX7219_driver_t max7219;
+extern MAX7219_driver_t max7219;
 #endif // MAX7219_DRIVER_H
