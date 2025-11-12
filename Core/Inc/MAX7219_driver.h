@@ -26,14 +26,13 @@ typedef struct MAX7219_driver
     SPI_HandleTypeDef *hspi;
     GPIO_TypeDef *cs_port;
     uint16_t cs_pin;
-    uint8_t screen_buffer[8];
+    uint8_t *screen_buffer;
     volatile uint8_t display_line;
     MAX7219_Tx_CpltCallback_t tx_cplt_callback;
 } MAX7219_driver_t;
 
-
 void MAX7219_Init(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin, MAX7219_Tx_CpltCallback_t tx_cplt_callback);
-void MAX7219_TxCpltHandle(SPI_HandleTypeDef *hspi);
+void MAX7219_TxCpltHandler(SPI_HandleTypeDef *hspi);
 void MAX7219_UpdateScreen(uint8_t new_screen[8]);
 
 extern MAX7219_driver_t max7219;

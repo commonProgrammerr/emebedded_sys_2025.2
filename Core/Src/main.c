@@ -127,8 +127,6 @@ volatile SystemState system_state = SYSTEM_STATE_1;
 volatile SystemState last_state = SYSTEM_STATE_1;
 volatile PCF8591_Channel channel_index = PCF8591_A0;
 
-uint8_t channels[4];
-uint8_t dac_value = 0;
 char dac_str[3];
 
 uint8_t timeout_counter = 0;
@@ -161,15 +159,21 @@ static void MX_I2C3_Init(void);
 // Critical section helpers for mutex-like behavior
 
 // Safer state transitions
+#define DEBUG
 static void set_system_state(SystemState new_state)
 {
 #ifdef DEBUG
-  char msg[50];
-  snprintf(msg, sizeof(msg), "[debug] State changed from %d to %d\r\n", last_state, system_state);
-  HAL_UART_Transmit_DMA(&huart2, (uint8_t *)msg, strlen(msg));
+  if (new_state != system_state && last_state != new_state)
+  {
+    static char msg[50];
+    snprintf(msg, sizeof(msg), "[debug] State changed from %d to %d\r\n", last_state, system_state);
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+  }
 #endif
+  // __disable_irq(); // Bloqueie interrupções temporariamente
   last_state = system_state;
   system_state = new_state;
+  // __enable_irq(); // Reative interrupções
 }
 
 static SystemState get_system_state(void)
@@ -196,8 +200,7 @@ void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c)
   else if (get_system_state() == SYSTEM_STATE_7)
   {
     uint8_t i = PCF8591_get_channel_index();
-    display_buffer[0] = (channels[i] > (pcf8591.analog_data)[i]) ? minus_screen : plus_screen;
-    channels[i] = (pcf8591.analog_data)[i];
+    display_buffer[0] = (pcf8591.analog_data)[i] <= 180 ? minus_screen : plus_screen;
     set_system_state(SYSTEM_STATE_8); // go to next state
   }
 }
@@ -226,12 +229,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
 }
 
-void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
-{
-  if (hspi->Instance == SPI1)
-    MAX7219_TxCpltCallback(hspi);
-}
-
 void process_uart_commands(char *cmd, uint16_t size)
 {
   uint8_t err = 0;
@@ -254,7 +251,7 @@ void process_uart_commands(char *cmd, uint16_t size)
     int dac_arg = atoi(&cmd[8]);
     if (dac_arg > 0 && dac_arg <= 255)
     {
-      dac_value = (uint8_t)dac_arg;
+      pcf8591.dac_value = (uint8_t)dac_arg;
       set_system_state(SYSTEM_STATE_5);
     }
     else
@@ -289,7 +286,7 @@ void process_uart_commands(char *cmd, uint16_t size)
   {
     char error_msg[200];
     sprintf(error_msg, "Unknown command: %s\n\r", cmd);
-    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)error_msg, strlen(error_msg));
+    HAL_UART_Transmit(&huart2, (uint8_t *)error_msg, strlen(error_msg), HAL_MAX_DELAY);
   }
 }
 
@@ -337,10 +334,9 @@ int main(void)
   char tx_buff[100];
   set_system_state(SYSTEM_STATE_1);
   PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
-  MAX7219_Init(&hspi1, GPIOA, GPIO_PIN_4, MAX7219_TxCpltCallback);
+  MAX7219_Init(&hspi1, CS_GPIO_Port, CS_Pin, MAX7219_TxCpltCallback);
   cmd_driver_init(&huart2, process_uart_commands);
   HAL_TIM_Base_Start_IT(&htim2); // Start timer for periodic tasks
-  
   while (1)
   {
     switch (get_system_state())
@@ -359,18 +355,19 @@ int main(void)
       __WFI(); // Wait for interrupt
       break;
     case SYSTEM_STATE_5:
-      PCF8591_write_dac(dac_value);
+      PCF8591_write_dac(pcf8591.dac_value);
       __WFI(); // Wait for interrupt
       break;
     case SYSTEM_STATE_4:
       if (last_state == SYSTEM_STATE_3)
-        sprintf(tx_buff, "AIN%d: %d\n\r", channel_index, channels[channel_index]);
+        sprintf(tx_buff, "AIN%d: %d\n\r", channel_index, pcf8591.analog_data[channel_index]);
       else if (last_state == SYSTEM_STATE_5)
-        sprintf(tx_buff, "Valor do DAC: %d\n\r", dac_value);
+        sprintf(tx_buff, "Valor do DAC: %d\n\r", pcf8591.dac_value);
       else
         sprintf(tx_buff, "Error de execução. Transição desconhecida\n\r");
 
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)tx_buff, strlen(tx_buff));
+      __WFI(); // Wait for interrupt
       break;
     case SYSTEM_STATE_8:
       updating_screen = 1;
