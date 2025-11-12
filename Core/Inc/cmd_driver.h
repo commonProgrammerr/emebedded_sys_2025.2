@@ -6,7 +6,7 @@
 #include "string.h"
 
 #define CMD_BUFFER_SIZE 1024
-#define MAX_COMMAND_SIZE CMD_BUFFER_SIZE
+#define MAX_COMMAND_SIZE 64
 typedef enum
 {
   CMD_STATE_IDLE = 0,
@@ -14,10 +14,17 @@ typedef enum
   CMD_STATE_READY,
 } cmd_state_t;
 
-typedef struct cmd_driver cmd_driver_t;
 typedef void (*cmd_ready_callback_t)(char *cmd, uint16_t size);
+typedef struct cmd_driver
+{
+  UART_HandleTypeDef *huart;
+  circularBuffer_t *buffer;
+  cmd_ready_callback_t callback;
+  cmd_state_t state;
+} cmd_driver_t;
 
 void cmd_tick(void);
 void cmd_driver_init(UART_HandleTypeDef *huart, cmd_ready_callback_t callback);
+size_t cmd_buffer_size();
 cmd_state_t cmd_get_state();
 #endif // CMD_DRIVER_H
