@@ -18,20 +18,22 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "PCF8591_driver.h"
-#include "cmd_driver.h"
-#include "MAX7219_driver.h"
-
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "PCF8591_driver.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+/*
+TODO:
+- Implement sign wave output with timer
+- Implement ADC read to calc wave length
+- Implement PWM output through TIM4 in SYSTEM_STATE_4
+*/
 typedef enum
 {
   SYSTEM_STATE_1 = 1,
@@ -43,63 +45,19 @@ typedef enum
   SYSTEM_STATE_7 = 7,
   SYSTEM_STATE_8 = 8,
 } SystemState;
+
+typedef enum
+{
+  idle = 0,
+  rx = 1,
+  tx = 2,
+} i2c_flag_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define I2C_INTERFACE hi2c3
 #define I2C_INTERFACE_INSTANCE I2C3
-#define TEMPERATURE_SCREEN { \
-    0b00000000,              \
-    0b01111110,              \
-    0b01111110,              \
-    0b00011000,              \
-    0b00011000,              \
-    0b00011000,              \
-    0b00011000,              \
-    0b00011000,              \
-    0b00000000,              \
-}
-#define TENSION_SCREEN { \
-    0b00000000,          \
-    0b10000001,          \
-    0b11000011,          \
-    0b11000011,          \
-    0b01100110,          \
-    0b00111100,          \
-    0b00011000,          \
-    0b00000000,          \
-}
-#define LIGHT_SCREEN { \
-    0b00000000,        \
-    0b00110000,        \
-    0b00110000,        \
-    0b00110000,        \
-    0b00110000,        \
-    0b00111100,        \
-    0b00111100,        \
-    0b00000000,        \
-}
-#define PLUS_SCREEN { \
-    0b00000000,       \
-    0b00011000,       \
-    0b00011000,       \
-    0b01111110,       \
-    0b01111110,       \
-    0b00011000,       \
-    0b00011000,       \
-    0b00000000,       \
-}
-#define MINUS_SCREEN { \
-    0b00000000,        \
-    0b00000000,        \
-    0b00000000,        \
-    0b00111100,        \
-    0b00111100,        \
-    0b00000000,        \
-    0b00000000,        \
-    0b00000000,        \
-}
 // Define the MAX7219 registers
 /* USER CODE END PD */
 
@@ -109,13 +67,16 @@ typedef enum
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
+DAC_HandleTypeDef hdac1;
+
 I2C_HandleTypeDef hi2c3;
 DMA_HandleTypeDef hdma_i2c3_rx;
 DMA_HandleTypeDef hdma_i2c3_tx;
 
-SPI_HandleTypeDef hspi1;
-DMA_HandleTypeDef hdma_spi1_tx;
-
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
@@ -126,19 +87,9 @@ DMA_HandleTypeDef hdma_usart2_tx;
 volatile SystemState system_state = SYSTEM_STATE_1;
 volatile SystemState last_state = SYSTEM_STATE_1;
 volatile PCF8591_Channel channel_index = PCF8591_A0;
-
-char dac_str[3];
-
-uint8_t timeout_counter = 0;
-uint8_t updating_screen = 0;
-uint8_t plus_screen[] = PLUS_SCREEN;
-uint8_t minus_screen[] = MINUS_SCREEN;
-uint8_t temperature_screen[] = TEMPERATURE_SCREEN;
-uint8_t tension_screen[] = TENSION_SCREEN;
-uint8_t light_screen[] = LIGHT_SCREEN;
-uint8_t blank_screen[] = {0, 0, 0, 0, 0, 0, 0, 0};
-uint8_t *display_buffer[] = {blank_screen, blank_screen};
-uint8_t current_screen = 0;
+volatile i2c_flag_t i2c = idle;
+volatile uint8_t mode = 1;
+volatile uint8_t read = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -146,9 +97,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C3_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_DAC1_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -156,14 +109,55 @@ static void MX_I2C3_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-// Critical section helpers for mutex-like behavior
+void next_state()
+{
+  switch (get_system_state())
+  {
+  case SYSTEM_STATE_1:
+    if (read)
+    {
+      if (mode == 1 || mode == 3)
+        set_system_state(SYSTEM_STATE_2);
+      else if (mode == 2)
+        set_system_state(SYSTEM_STATE_5);
+      else
+        mode = 1;
+    }
+    break;
+  case SYSTEM_STATE_4:
+    if (mode == 1)
+      set_system_state(SYSTEM_STATE_1);
+    else if (mode == 3)
+      set_system_state(SYSTEM_STATE_5);
+  case SYSTEM_STATE_2:
+    if (i2c == tx)
+      set_system_state(SYSTEM_STATE_3);
+    break;
+  case SYSTEM_STATE_3:
+    if (i2c == rx)
+      set_system_state(SYSTEM_STATE_4);
+    break;
+  case SYSTEM_STATE_5:
+    if (i2c == tx)
+      set_system_state(SYSTEM_STATE_6);
+    break;
+  case SYSTEM_STATE_6:
+    if (i2c == rx)
+      set_system_state(SYSTEM_STATE_7);
+    break;
+  case SYSTEM_STATE_7:
+    set_system_state(SYSTEM_STATE_1);
+  default:
+    break;
+  }
+}
 
 // Safer state transitions
 #define DEBUG
 static void set_system_state(SystemState new_state)
 {
 #ifdef DEBUG
-  if (new_state != system_state && last_state != new_state)
+  if (new_state != system_state)
   {
     static char msg[50];
     snprintf(msg, sizeof(msg), "[debug] State changed from %d to %d\r\n", last_state, system_state);
@@ -182,111 +176,22 @@ static SystemState get_system_state(void)
   return state;
 }
 
-void PCF8591_TxCpltCallback(I2C_HandleTypeDef *hi2c)
-{
-  // Transmission complete. Go to next state
-  if (get_system_state() == SYSTEM_STATE_2)
-    set_system_state(SYSTEM_STATE_3);
-  else if (get_system_state() == SYSTEM_STATE_5)
-    set_system_state(SYSTEM_STATE_4);
-  else if (get_system_state() == SYSTEM_STATE_6)
-    set_system_state(SYSTEM_STATE_7);
-}
+void PCF8591_TxCpltCallback(I2C_HandleTypeDef *hi2c) { i2c = tx; }
 
-void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c)
-{
-  if (get_system_state() == SYSTEM_STATE_3)
-    set_system_state(SYSTEM_STATE_4); // go to next state
-  else if (get_system_state() == SYSTEM_STATE_7)
-  {
-    uint8_t i = PCF8591_get_channel_index();
-    display_buffer[0] = (pcf8591.analog_data)[i] <= 180 ? minus_screen : plus_screen;
-    set_system_state(SYSTEM_STATE_8); // go to next state
-  }
-}
-
-void MAX7219_TxCpltCallback(SPI_HandleTypeDef *hspi)
-{
-  if (get_system_state() == SYSTEM_STATE_8) // Transmission complete
-  {
-    updating_screen = 0;
-    set_system_state(SYSTEM_STATE_1); // back to initial state
-  }
-}
-
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART2 && get_system_state() == SYSTEM_STATE_4) // Transmission complete
-    set_system_state(SYSTEM_STATE_1);                                    // back to initial state
-}
+void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c) { i2c = rx; }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM2)
-  {
-    if (get_system_state() == SYSTEM_STATE_1)
-      set_system_state(SYSTEM_STATE_8); // Move to screen update state
-  }
+    read = 1;
 }
-
-void process_uart_commands(char *cmd, uint16_t size)
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  uint8_t err = 0;
-  // Process the complete command (cmd_buffer is now stable)
-  if (strncmp(cmd, "Read_AIN", 8) == 0)
+  if (GPIO_Pin == B1_Pin)
   {
-    // Handle read command
-    char channel = cmd[8]; // Get channel number
-    if (channel >= '0' && channel <= '3')
-    {
-      channel_index = (PCF8591_Channel)(channel - '0');
-      set_system_state(SYSTEM_STATE_2);
-    }
-    else
-      err = 1;
-  }
-  else if (strncmp(cmd, "Set_DAC_", 8) == 0)
-  {
-    // Handle DAC command
-    int dac_arg = atoi(&cmd[8]);
-    if (dac_arg > 0 && dac_arg <= 255)
-    {
-      pcf8591.dac_value = (uint8_t)dac_arg;
-      set_system_state(SYSTEM_STATE_5);
-    }
-    else
-      err = 1;
-  }
-  else
-  {
-    // Handle display commands
-    if (strncmp(cmd, "Temp", 4) == 0)
-    {
-      display_buffer[1] = temperature_screen;
-      channel_index = 1;
-    }
-    else if (strncmp(cmd, "Volt", 4) == 0)
-    {
-      display_buffer[1] = tension_screen;
-      channel_index = 3;
-    }
-    else if (strncmp(cmd, "LDR", 3) == 0)
-    {
-      display_buffer[1] = light_screen;
-      channel_index = 0;
-    }
-    else
-      err = 1;
-
-    if (err == 0)
-      set_system_state(SYSTEM_STATE_6);
-  }
-
-  if (err == 1)
-  {
-    char error_msg[200];
-    sprintf(error_msg, "Unknown command: %s\n\r", cmd);
-    HAL_UART_Transmit(&huart2, (uint8_t *)error_msg, strlen(error_msg), HAL_MAX_DELAY);
+    mode++;
+    if (mode > 3)
+      mode = 1;
   }
 }
 
@@ -323,9 +228,11 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART2_UART_Init();
-  MX_SPI1_Init();
   MX_TIM2_Init();
   MX_I2C3_Init();
+  MX_ADC1_Init();
+  MX_DAC1_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
@@ -334,48 +241,46 @@ int main(void)
   char tx_buff[100];
   set_system_state(SYSTEM_STATE_1);
   PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
-  MAX7219_Init(&hspi1, CS_GPIO_Port, CS_Pin, MAX7219_TxCpltCallback);
-  cmd_driver_init(&huart2, process_uart_commands);
   HAL_TIM_Base_Start_IT(&htim2); // Start timer for periodic tasks
   while (1)
   {
     switch (get_system_state())
     {
     case SYSTEM_STATE_1:
-      cmd_tick();
+      __WFI(); // Wait for interrupt to save power
+      next_state();
       break;
     case SYSTEM_STATE_2:
-    case SYSTEM_STATE_6:
-      PCF8591_set_channel_index(channel_index);
-      __WFI(); // Wait for interrupt
+      read = 0;
+      PCF8591_set_channel_index(PCF8591_A0);
+      __WFI(); // Wait for interrupt to save power
+      next_state();
       break;
     case SYSTEM_STATE_3:
-    case SYSTEM_STATE_7:
       PCF8591_read_analog_channel();
-      __WFI(); // Wait for interrupt
-      break;
-    case SYSTEM_STATE_5:
-      PCF8591_write_dac(pcf8591.dac_value);
-      __WFI(); // Wait for interrupt
+      __WFI(); // Wait for interrupt to save power
+      next_state();
       break;
     case SYSTEM_STATE_4:
-      if (last_state == SYSTEM_STATE_3)
-        sprintf(tx_buff, "AIN%d: %d\n\r", channel_index, pcf8591.analog_data[channel_index]);
-      else if (last_state == SYSTEM_STATE_5)
-        sprintf(tx_buff, "Valor do DAC: %d\n\r", pcf8591.dac_value);
-      else
-        sprintf(tx_buff, "Error de execução. Transição desconhecida\n\r");
-
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)tx_buff, strlen(tx_buff));
-      __WFI(); // Wait for interrupt
+      /*TODO: set led value through pwm */
+      i2c = idle;
+      next_state();
       break;
-    case SYSTEM_STATE_8:
-      updating_screen = 1;
-      current_screen = (current_screen + 1) % 2;
-
-      MAX7219_UpdateScreen(display_buffer[current_screen]);
-      while (updating_screen)
-        __WFI(); // Wait for interrupt
+    case SYSTEM_STATE_5:
+      read = 0;
+      PCF8591_set_channel_index(PCF8591_A1);
+      __WFI(); // Wait for interrupt to save power
+      next_state();
+      break;
+    case SYSTEM_STATE_6:
+      PCF8591_read_analog_channel();
+      __WFI(); // Wait for interrupt to save power
+      next_state();
+      break;
+    case SYSTEM_STATE_7:
+      /*TODO: set dac outut wave length*/
+      i2c = idle;
+      next_state();
       break;
     default:
       break;
@@ -436,6 +341,114 @@ void SystemClock_Config(void)
 }
 
 /**
+ * @brief ADC1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_MultiModeTypeDef multimode = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+   */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc1.Init.OversamplingMode = DISABLE;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the ADC multi-mode
+   */
+  multimode.Mode = ADC_MODE_INDEPENDENT;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+   */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+}
+
+/**
+ * @brief DAC1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_DAC1_Init(void)
+{
+
+  /* USER CODE BEGIN DAC1_Init 0 */
+
+  /* USER CODE END DAC1_Init 0 */
+
+  DAC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN DAC1_Init 1 */
+
+  /* USER CODE END DAC1_Init 1 */
+
+  /** DAC Initialization
+   */
+  hdac1.Instance = DAC1;
+  if (HAL_DAC_Init(&hdac1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** DAC channel OUT2 config
+   */
+  sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
+  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
+  sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
+  sConfig.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_ENABLE;
+  sConfig.DAC_UserTrimming = DAC_TRIMMING_FACTORY;
+  if (HAL_DAC_ConfigChannel(&hdac1, &sConfig, DAC_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN DAC1_Init 2 */
+
+  /* USER CODE END DAC1_Init 2 */
+}
+
+/**
  * @brief I2C3 Initialization Function
  * @param None
  * @retval None
@@ -483,42 +496,81 @@ static void MX_I2C3_Init(void)
 }
 
 /**
- * @brief SPI1 Initialization Function
+ * @brief TIM1 Initialization Function
  * @param None
  * @retval None
  */
-static void MX_SPI1_Init(void)
+static void MX_TIM1_Init(void)
 {
 
-  /* USER CODE BEGIN SPI1_Init 0 */
+  /* USER CODE BEGIN TIM1_Init 0 */
 
-  /* USER CODE END SPI1_Init 0 */
+  /* USER CODE END TIM1_Init 0 */
 
-  /* USER CODE BEGIN SPI1_Init 1 */
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 7;
-  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 7999;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 100;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN SPI1_Init 2 */
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+  sBreakDeadTimeConfig.Break2Filter = 0;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
 
-  /* USER CODE END SPI1_Init 2 */
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
 }
 
 /**
@@ -542,7 +594,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 7999;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 5000;
+  htim2.Init.Period = 500;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -607,9 +659,11 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
-  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
   /* DMA1_Channel2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
@@ -622,9 +676,6 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel7_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
-  /* DMA2_Channel4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Channel4_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Channel4_IRQn);
 }
 
 /**
@@ -649,13 +700,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(I2C_VCC_GPIO_Port, I2C_VCC_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, I2C_GND_Pin | SPI_GND_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SPI_VCC_GPIO_Port, SPI_VCC_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(I2C_GND_GPIO_Port, I2C_GND_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -670,26 +715,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(I2C_VCC_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : CS_Pin */
-  GPIO_InitStruct.Pin = CS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(CS_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : I2C_GND_Pin SPI_GND_Pin */
-  GPIO_InitStruct.Pin = I2C_GND_Pin | SPI_GND_Pin;
+  /*Configure GPIO pin : I2C_GND_Pin */
+  GPIO_InitStruct.Pin = I2C_GND_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(I2C_GND_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SPI_VCC_Pin */
-  GPIO_InitStruct.Pin = SPI_VCC_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(SPI_VCC_GPIO_Port, &GPIO_InitStruct);
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
