@@ -4,6 +4,9 @@
  * @author  Serbay Ozkan
  * @date    12 May 2021
  * @brief   Circular Buffer Data Structure Header File
+ * TODO: Document thread-safety guarantees (or lack thereof) for ISR usage.
+ * TODO: Document itemSize restrictions/alignment requirements.
+ * TODO: Document index calculation method to clarify byte vs item indexing.
  ******************************************************************
  */
 
