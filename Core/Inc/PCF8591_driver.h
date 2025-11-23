@@ -1,6 +1,8 @@
 #if !defined(PCF8591_DRIVER_H)
 #define PCF8591_DRIVER_H
 
+/* TODO: Add comprehensive documentation for driver API, especially callback
+ * behavior and expected state machine integration. */
 #include "main.h"
 
 #define PCF8591_ADDRESS (0x48 << 1) // Shifted PCF8591 I2C address
@@ -35,7 +37,7 @@ void PCF8591_read_analog_channel(void);
 
 // Inicialização
 void PCF8591_Init(
-    I2C_HandleTypeDef *hspi,
+    I2C_HandleTypeDef *hi2c,
     PCF8591_TickCallback_t tick_callback,
     PCF8591_TickCallback_t tx_cplt_callback,
     PCF8591_TickCallback_t rx_cplt_callback);

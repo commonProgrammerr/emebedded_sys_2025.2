@@ -30,16 +30,22 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+/* TODO: Add comprehensive documentation for each state describing:
+ * - What the state does
+ * - Entry conditions
+ * - Exit conditions and next states
+ * - Which peripherals are active
+ * - Expected timing/duration */
 typedef enum
 {
-  SYSTEM_STATE_1 = 1,
-  SYSTEM_STATE_2 = 2,
-  SYSTEM_STATE_3 = 3,
-  SYSTEM_STATE_4 = 4,
-  SYSTEM_STATE_5 = 5,
-  SYSTEM_STATE_6 = 6,
-  SYSTEM_STATE_7 = 7,
-  SYSTEM_STATE_8 = 8,
+  SYSTEM_STATE_1 = 1,  // Idle state - waiting for events
+  SYSTEM_STATE_2 = 2,  // Config ADC channel via I2C
+  SYSTEM_STATE_3 = 3,  // Read ADC channel via I2C
+  SYSTEM_STATE_4 = 4,  // Process PWM duty cycle update
+  SYSTEM_STATE_5 = 5,  // Config ADC channel for DAC control
+  SYSTEM_STATE_6 = 6,  // Read ADC for DAC control
+  SYSTEM_STATE_7 = 7,  // Update DAC waveform amplitude
+  SYSTEM_STATE_8 = 8,  // Reserved/unused
 } SystemState;
 
 typedef enum
@@ -55,7 +61,8 @@ typedef enum
 #define I2C_INTERFACE hi2c3
 #define I2C_INTERFACE_INSTANCE I2C3
 #define SIN_WAVE_SAMPLES 512
-#define SIN_WAVE_MAX_AMPLITUDE 4095
+#define SIN_WAVE_MAX_AMPLITUDE 4095  // 12-bit DAC max value
+/* TODO: Use M_PI from math.h instead of defining custom _PI constant */
 #define _PI 3.141592653589793
 // Define the MAX7219 registers
 /* USER CODE END PD */
@@ -86,6 +93,9 @@ DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 static uint16_t sin_wave_buff[SIN_WAVE_SAMPLES];
+/* FIXME: Volatile variables accessed from ISR and main loop without atomic protection.
+ * Consider using proper synchronization mechanisms or disabling interrupts during
+ * critical sections to prevent race conditions. */
 volatile SystemState system_state = SYSTEM_STATE_1;
 volatile SystemState last_state = SYSTEM_STATE_1;
 volatile i2c_flag_t i2c = idle;
@@ -107,7 +117,7 @@ static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 static SystemState get_system_state(void);
 static void set_system_state(SystemState new_state);
-static void set_pwm_duty_percent(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty_percent);
+static void set_pwm_duty(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty_percent);
 void next_state();
 void populate_sin_wave_buff(uint16_t wave_amplitude);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
@@ -139,6 +149,7 @@ void next_state()
       set_system_state(SYSTEM_STATE_1);
     else if (mode == 3)
       set_system_state(SYSTEM_STATE_5);
+    break;
   case SYSTEM_STATE_2:
     if (i2c == tx)
       set_system_state(SYSTEM_STATE_3);
@@ -157,6 +168,9 @@ void next_state()
     break;
   case SYSTEM_STATE_7:
     set_system_state(SYSTEM_STATE_1);
+    break;
+  /* FIXME: SYSTEM_STATE_8 is defined but has no transition logic in next_state().
+   * If STATE_8 is used, add proper transition handling here. */
   default:
     break;
   }
@@ -169,7 +183,7 @@ static void set_system_state(SystemState new_state)
   if (new_state != system_state)
   {
     static char msg[50];
-    snprintf(msg, sizeof(msg), "[debug] State changed from %d to %d\r\n", last_state, system_state);
+    snprintf(msg, sizeof(msg), "[debug] State changed from %d to %d\r\n", system_state, new_state);
     HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
   }
 #endif
@@ -185,9 +199,9 @@ static SystemState get_system_state(void)
   return state;
 }
 
-static void set_pwm_duty_percent(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty_percent)
+static void set_pwm_duty(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty)
 {
-  uint32_t pulse = (htim->Init.Period * duty_percent) / UINT8_MAX; // compare value
+  uint32_t pulse = (htim->Init.Period * duty) / UINT8_MAX; // compare value
   __HAL_TIM_SET_COMPARE(htim, channel, pulse);
 }
 
@@ -203,7 +217,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == B1_Pin)
+  /* TODO: Add debouncing logic to prevent multiple mode switches from button bouncing */
+  if (GPIO_Pin == B1_Pin && get_system_state() != SYSTEM_STATE_7)
   {
     mode = (mode % 3) + 1;
 
@@ -211,11 +226,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     {
     case 1:
     default:
-      HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1); // Stop DAC DMA
+      /* TODO: Check HAL return values and handle errors appropriately */
+      HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2); // Stop DAC DMA
       break;
     case 2:
       HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4); // Stop PWM
-      HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)sin_wave_buff, sizeof(sin_wave_buff), DAC_ALIGN_12B_R);
+      /* TODO: Verify HAL_DAC_Start_DMA return value before proceeding */
+      HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)sin_wave_buff, SIN_WAVE_SAMPLES, DAC_ALIGN_12B_R);
       break;
     case 3:
       HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
@@ -236,7 +253,6 @@ void populate_sin_wave_buff(uint16_t wave_amplitude)
 
   for (size_t i = 0; i < SIN_WAVE_SAMPLES; ++i)
   {
-    /* amplitude full-scale centered (offset 2048) */
     double v = (sin(2.0 * _PI * i / SIN_WAVE_SAMPLES) + 1.0) / 2.0;
     sin_wave_buff[i] = (uint16_t)(v * wave_amplitude);
   }
@@ -284,6 +300,9 @@ int main(void)
   set_system_state(SYSTEM_STATE_1);
   PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
   HAL_TIM_Base_Start_IT(&htim2);            // Start timer for periodic tasks
+  /* FIXME: TIM4 should be started here with HAL_TIM_Base_Start(&htim4) to trigger
+   * DAC DMA conversions when mode 2 is activated. Currently DAC DMA will not work
+   * properly without TIM4 running. */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM for DAC output
   populate_sin_wave_buff(SIN_WAVE_MAX_AMPLITUDE);
   /* USER CODE END 2 */
@@ -307,7 +326,7 @@ int main(void)
       __WFI(); // Wait for interrupt to save power
       break;
     case SYSTEM_STATE_4:
-      set_pwm_duty_percent(&htim1, TIM_CHANNEL_4, pcf8591.analog_data[PCF8591_A0]);
+      set_pwm_duty(&htim1, TIM_CHANNEL_4, pcf8591.analog_data[PCF8591_A0]);
       i2c = idle;
       break;
     case SYSTEM_STATE_5:
@@ -740,6 +759,10 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* TODO: Review interrupt priorities. All DMAs set to priority 0 (highest).
+   * Consider assigning different priorities based on criticality:
+   * - Critical real-time peripherals (DAC, ADC): higher priority
+   * - Communication interfaces (UART, I2C): medium priority */
   /* DMA1_Channel2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);

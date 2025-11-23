@@ -30,14 +30,31 @@ void cmd_tick()
     if (cmd.callback != NULL)
     {
       char *command_buff = malloc(MAX_COMMAND_SIZE + 1);
+      /* TODO: Check malloc return value for NULL before using command_buff */
+      if (command_buff == NULL)
+      {
+        cmd.state = CMD_STATE_IDLE;
+        break;
+      }
+      
       size_t i;
+      /* TODO: Add protection against malformed commands without null terminator
+       * that could overflow the buffer or cause indefinite loops. */
       for (i = 0; i < MAX_COMMAND_SIZE; i++)
       {
-        circular_buffer_pop(cmd.buffer, &command_buff[i]);
+        /* TODO: Check return value of circular_buffer_pop. If pop fails we
+         * should break and avoid using uninitialized data. Also ensure we
+         * always null-terminate `command_buff` before calling strlen/callback. */
+        if (!circular_buffer_pop(cmd.buffer, &command_buff[i]))
+          break;
         if (command_buff[i] == '\0')
           break;
       }
-      if (i > 1)
+      /* Ensure null-termination in case we hit MAX_COMMAND_SIZE without '\0' */
+      if (i == MAX_COMMAND_SIZE)
+        command_buff[MAX_COMMAND_SIZE] = '\0';
+
+      if (i > 0)
         cmd.callback(command_buff, strlen(command_buff));
       free(command_buff);
     }
@@ -58,7 +75,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     // Check if we received the terminator character
     if ((rx_char == '\n' || rx_char == '\r'))
     {
-      circular_buffer_push(cmd.buffer, "\0"); // Null terminate
+      /* FIXME: Pushing a string literal's address into the circular buffer
+       * may be confusing; explicitly push a char variable to avoid passing
+       * a pointer to static literal memory (and make intent clear). */
+      char zero = '\0';
+      circular_buffer_push(cmd.buffer, &zero); // Null terminate
       cmd.state = CMD_STATE_READY;
     }
     else

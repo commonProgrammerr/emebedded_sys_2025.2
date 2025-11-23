@@ -52,15 +52,25 @@ static circularBuffer_t *circular_buffer_find_unused_instance(void)
     if (circularBufferPool[i].inUse == false)
       return &circularBufferPool[i];
   }
+  /* FIXME: No explicit return when no unused instance found. Should return NULL
+   * and callers must check for NULL. Current behavior is undefined/compiler-dependent. */
+  return NULL;
 }
 
 /* Creates and inits new circular buffer object */
 circularBuffer_t *circular_buffer_init(size_t itemSize)
 {
-  if (instanceNumber == CB_MAX_INSTANCE_POOL_SIZE - 1)
+  /* FIXME: instanceNumber check likely off-by-one. Current check disallows creating
+   * the last allowed instance. Use >= CB_MAX_INSTANCE_POOL_SIZE and ensure the
+   * bookkeeping is consistent. */
+  if (instanceNumber >= CB_MAX_INSTANCE_POOL_SIZE)
     return NULL;
 
   circularBuffer_t *newCircularBuffer = circular_buffer_find_unused_instance();
+  /* TODO: circular_buffer_find_unused_instance may return NULL; check before use. */
+  if (newCircularBuffer == NULL)
+    return NULL;
+  
   newCircularBuffer->itemSize = itemSize;
   newCircularBuffer->capacity = CB_MAX_BUFFER_POOL_SIZE / itemSize;
 
@@ -92,9 +102,15 @@ void circular_buffer_destroy(circularBuffer_t *circularBuffer)
 /* Pushes new data to buffer and moves tail to next position */
 bool circular_buffer_push(circularBuffer_t *const circularBuffer, const void *data)
 {
+  /* TODO: Validate pointer arguments (circularBuffer != NULL && data != NULL) */
   if (circular_buffer_full(circularBuffer))
     return false;
 
+  /* FIXME: Index arithmetic mixes bytes and items and uses +1. This is error-prone
+   * and likely causes misalignment/overlap when itemSize > 1. Consider tracking
+   * head/tail as item indices (0..capacity-1) and multiply by itemSize when
+   * accessing the byte buffer. Current calculation should be reviewed and
+   * corrected to avoid off-by-one errors. */
   int index = (circularBuffer->tail + 1) % (circularBuffer->capacity * circularBuffer->itemSize);
   (void)memcpy((void *)&circularBuffer->data[index], data, circularBuffer->itemSize);
   circularBuffer->tail = (circularBuffer->tail + circularBuffer->itemSize) % (circularBuffer->capacity * circularBuffer->itemSize);
@@ -105,9 +121,14 @@ bool circular_buffer_push(circularBuffer_t *const circularBuffer, const void *da
 /* Poppes data from buffer and moves head to next position */
 bool circular_buffer_pop(circularBuffer_t *const circularBuffer, void *data)
 {
+  /* TODO: Validate pointer arguments (circularBuffer != NULL && data != NULL) */
   if (circular_buffer_empty(circularBuffer))
     return false;
 
+  /* FIXME: Same byte/item indexing problem as in push(). Also clearing only one
+   * byte at circularBuffer->head is insufficient when itemSize > 1. Either
+   * remove the clearing (not required for correctness) or clear the whole
+   * item-sized region if zeroing is required. */
   int index = (circularBuffer->head + 1) % (circularBuffer->capacity * circularBuffer->itemSize);
   (void)memcpy(data, (void *)&circularBuffer->data[index], circularBuffer->itemSize);
   circularBuffer->data[circularBuffer->head] = 0;
