@@ -23,36 +23,35 @@
 #define __MAIN_H
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32l4xx_hal.h"
 
-  /* Private includes ----------------------------------------------------------*/
-  /* USER CODE BEGIN Includes */
-  /* USER CODE END Includes */
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+/* USER CODE END Includes */
 
-  /* Exported types ------------------------------------------------------------*/
-  /* USER CODE BEGIN ET */
+/* Exported types ------------------------------------------------------------*/
+/* USER CODE BEGIN ET */
 
-  /* USER CODE END ET */
+/* USER CODE END ET */
 
-  /* Exported constants --------------------------------------------------------*/
-  /* USER CODE BEGIN EC */
+/* Exported constants --------------------------------------------------------*/
+/* USER CODE BEGIN EC */
 
-  /* USER CODE END EC */
+/* USER CODE END EC */
 
-  /* Exported macro ------------------------------------------------------------*/
-  /* USER CODE BEGIN EM */
+/* Exported macro ------------------------------------------------------------*/
+/* USER CODE BEGIN EM */
 
-  /* USER CODE END EM */
+/* USER CODE END EM */
 
-  void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
-  /* Exported functions prototypes ---------------------------------------------*/
-  void Error_Handler(void);
+/* Exported functions prototypes ---------------------------------------------*/
+void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
@@ -68,6 +67,8 @@ extern "C"
 #define USART_RX_GPIO_Port GPIOA
 #define I2C_VCC_Pin GPIO_PIN_4
 #define I2C_VCC_GPIO_Port GPIOA
+#define DAC_OUT_Pin GPIO_PIN_5
+#define DAC_OUT_GPIO_Port GPIOA
 #define I2C_GND_Pin GPIO_PIN_0
 #define I2C_GND_GPIO_Port GPIOB
 #define TMS_Pin GPIO_PIN_13
@@ -77,9 +78,9 @@ extern "C"
 #define SWO_Pin GPIO_PIN_3
 #define SWO_GPIO_Port GPIOB
 
-  /* USER CODE BEGIN Private defines */
+/* USER CODE BEGIN Private defines */
 
-  /* USER CODE END Private defines */
+/* USER CODE END Private defines */
 
 #ifdef __cplusplus
 }
