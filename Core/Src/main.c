@@ -18,22 +18,18 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "PCF8591_driver.h"
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-/*
-TODO:
-- Implement sign wave output with timer
-- Implement ADC read to calc wave length
-- Implement PWM output through TIM4 in SYSTEM_STATE_4
-*/
 typedef enum
 {
   SYSTEM_STATE_1 = 1,
@@ -58,6 +54,9 @@ typedef enum
 /* USER CODE BEGIN PD */
 #define I2C_INTERFACE hi2c3
 #define I2C_INTERFACE_INSTANCE I2C3
+#define SIN_WAVE_SAMPLES 512
+#define SIN_WAVE_MAX_AMPLITUDE 4095
+#define _PI 3.141592653589793
 // Define the MAX7219 registers
 /* USER CODE END PD */
 
@@ -67,10 +66,11 @@ typedef enum
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-ADC_HandleTypeDef hadc1;
-DMA_HandleTypeDef hdma_adc1;
+ADC_HandleTypeDef hadc3;
+DMA_HandleTypeDef hdma_adc3;
 
 DAC_HandleTypeDef hdac1;
+DMA_HandleTypeDef hdma_dac_ch2;
 
 I2C_HandleTypeDef hi2c3;
 DMA_HandleTypeDef hdma_i2c3_rx;
@@ -78,15 +78,16 @@ DMA_HandleTypeDef hdma_i2c3_tx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
+static uint16_t sin_wave_buff[SIN_WAVE_SAMPLES];
 volatile SystemState system_state = SYSTEM_STATE_1;
 volatile SystemState last_state = SYSTEM_STATE_1;
-volatile PCF8591_Channel channel_index = PCF8591_A0;
 volatile i2c_flag_t i2c = idle;
 volatile uint8_t mode = 1;
 volatile uint8_t read = 0;
@@ -99,11 +100,20 @@ static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C3_Init(void);
-static void MX_ADC1_Init(void);
 static void MX_DAC1_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_ADC3_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
-
+static SystemState get_system_state(void);
+static void set_system_state(SystemState new_state);
+static void set_pwm_duty_percent(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty_percent);
+void next_state();
+void populate_sin_wave_buff(uint16_t wave_amplitude);
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+void PCF8591_TxCpltCallback(I2C_HandleTypeDef *hi2c);
+void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -153,7 +163,6 @@ void next_state()
 }
 
 // Safer state transitions
-#define DEBUG
 static void set_system_state(SystemState new_state)
 {
 #ifdef DEBUG
@@ -176,6 +185,12 @@ static SystemState get_system_state(void)
   return state;
 }
 
+static void set_pwm_duty_percent(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty_percent)
+{
+  uint32_t pulse = (htim->Init.Period * duty_percent) / UINT8_MAX; // compare value
+  __HAL_TIM_SET_COMPARE(htim, channel, pulse);
+}
+
 void PCF8591_TxCpltCallback(I2C_HandleTypeDef *hi2c) { i2c = tx; }
 
 void PCF8591_RxCpltCallback(I2C_HandleTypeDef *hi2c) { i2c = rx; }
@@ -185,16 +200,47 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM2)
     read = 1;
 }
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == B1_Pin)
   {
-    mode++;
-    if (mode > 3)
-      mode = 1;
+    mode = (mode % 3) + 1;
+
+    switch (mode)
+    {
+    case 1:
+    default:
+      HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1); // Stop DAC DMA
+      break;
+    case 2:
+      HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4); // Stop PWM
+      HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)sin_wave_buff, sizeof(sin_wave_buff), DAC_ALIGN_12B_R);
+      break;
+    case 3:
+      HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
+      break;
+    }
   }
 }
 
+void populate_sin_wave_buff(uint16_t wave_amplitude)
+{
+  if (wave_amplitude > SIN_WAVE_MAX_AMPLITUDE)
+    wave_amplitude = SIN_WAVE_MAX_AMPLITUDE;
+  else if (wave_amplitude == 0)
+  {
+    memset(sin_wave_buff, 0, sizeof(sin_wave_buff));
+    return;
+  }
+
+  for (size_t i = 0; i < SIN_WAVE_SAMPLES; ++i)
+  {
+    /* amplitude full-scale centered (offset 2048) */
+    double v = (sin(2.0 * _PI * i / SIN_WAVE_SAMPLES) + 1.0) / 2.0;
+    sin_wave_buff[i] = (uint16_t)(v * wave_amplitude);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -230,61 +276,58 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_I2C3_Init();
-  MX_ADC1_Init();
   MX_DAC1_Init();
   MX_TIM1_Init();
+  MX_ADC3_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
+  set_system_state(SYSTEM_STATE_1);
+  PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
+  HAL_TIM_Base_Start_IT(&htim2);            // Start timer for periodic tasks
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM for DAC output
+  populate_sin_wave_buff(SIN_WAVE_MAX_AMPLITUDE);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  char tx_buff[100];
-  set_system_state(SYSTEM_STATE_1);
-  PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
-  HAL_TIM_Base_Start_IT(&htim2); // Start timer for periodic tasks
   while (1)
   {
     switch (get_system_state())
     {
     case SYSTEM_STATE_1:
       __WFI(); // Wait for interrupt to save power
-      next_state();
       break;
     case SYSTEM_STATE_2:
       read = 0;
       PCF8591_set_channel_index(PCF8591_A0);
       __WFI(); // Wait for interrupt to save power
-      next_state();
       break;
     case SYSTEM_STATE_3:
       PCF8591_read_analog_channel();
       __WFI(); // Wait for interrupt to save power
-      next_state();
       break;
     case SYSTEM_STATE_4:
-      /*TODO: set led value through pwm */
+      set_pwm_duty_percent(&htim1, TIM_CHANNEL_4, pcf8591.analog_data[PCF8591_A0]);
       i2c = idle;
-      next_state();
       break;
     case SYSTEM_STATE_5:
       read = 0;
       PCF8591_set_channel_index(PCF8591_A1);
       __WFI(); // Wait for interrupt to save power
-      next_state();
       break;
     case SYSTEM_STATE_6:
       PCF8591_read_analog_channel();
       __WFI(); // Wait for interrupt to save power
-      next_state();
       break;
     case SYSTEM_STATE_7:
-      /*TODO: set dac outut wave length*/
+      uint16_t new_wave_amplitude = (uint16_t)(pcf8591.analog_data[PCF8591_A1] * SIN_WAVE_MAX_AMPLITUDE / UINT8_MAX);
+      populate_sin_wave_buff(new_wave_amplitude);
       i2c = idle;
-      next_state();
       break;
     default:
       break;
     }
+    next_state();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -341,69 +384,60 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief ADC1 Initialization Function
+ * @brief ADC3 Initialization Function
  * @param None
  * @retval None
  */
-static void MX_ADC1_Init(void)
+static void MX_ADC3_Init(void)
 {
 
-  /* USER CODE BEGIN ADC1_Init 0 */
+  /* USER CODE BEGIN ADC3_Init 0 */
 
-  /* USER CODE END ADC1_Init 0 */
+  /* USER CODE END ADC3_Init 0 */
 
-  ADC_MultiModeTypeDef multimode = {0};
   ADC_ChannelConfTypeDef sConfig = {0};
 
-  /* USER CODE BEGIN ADC1_Init 1 */
+  /* USER CODE BEGIN ADC3_Init 1 */
 
-  /* USER CODE END ADC1_Init 1 */
+  /* USER CODE END ADC3_Init 1 */
 
   /** Common config
    */
-  hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
-  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
-  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  hadc1.Init.OversamplingMode = DISABLE;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure the ADC multi-mode
-   */
-  multimode.Mode = ADC_MODE_INDEPENDENT;
-  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  hadc3.Instance = ADC3;
+  hadc3.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc3.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc3.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc3.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc3.Init.LowPowerAutoWait = DISABLE;
+  hadc3.Init.ContinuousConvMode = DISABLE;
+  hadc3.Init.NbrOfConversion = 1;
+  hadc3.Init.DiscontinuousConvMode = DISABLE;
+  hadc3.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc3.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc3.Init.DMAContinuousRequests = DISABLE;
+  hadc3.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc3.Init.OversamplingMode = DISABLE;
+  if (HAL_ADC_Init(&hadc3) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Configure Regular Channel
    */
-  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Channel = ADC_CHANNEL_15;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN ADC1_Init 2 */
+  /* USER CODE BEGIN ADC3_Init 2 */
 
-  /* USER CODE END ADC1_Init 2 */
+  /* USER CODE END ADC3_Init 2 */
 }
 
 /**
@@ -435,7 +469,7 @@ static void MX_DAC1_Init(void)
   /** DAC channel OUT2 config
    */
   sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
-  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
+  sConfig.DAC_Trigger = DAC_TRIGGER_T4_TRGO;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
   sConfig.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_ENABLE;
   sConfig.DAC_UserTrimming = DAC_TRIMMING_FACTORY;
@@ -516,9 +550,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 7999;
+  htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 100;
+  htim1.Init.Period = 65535;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -618,6 +652,50 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+ * @brief TIM4 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 7999;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 10;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+}
+
+/**
  * @brief USART2 Initialization Function
  * @param None
  * @retval None
@@ -659,23 +737,27 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA1_Channel1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
   /* DMA1_Channel2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
   /* DMA1_Channel3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
   /* DMA1_Channel6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
   /* DMA1_Channel7_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
+  /* DMA2_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel5_IRQn);
 }
 
 /**
