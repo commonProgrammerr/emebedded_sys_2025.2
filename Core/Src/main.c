@@ -113,15 +113,29 @@ DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
-static uint16_t sin_wave_buff[SIN_WAVE_SAMPLES];
-/* FIXME: Volatile variables accessed from ISR and main loop without atomic protection.
- * Consider using proper synchronization mechanisms or disabling interrupts during
- * critical sections to prevent race conditions. */
+
+// Helper macros for atomic access
+#define ATOMIC_READ(var) ({ \
+  __disable_irq(); \
+  typeof(var) tmp = (var); \
+  __enable_irq(); \
+  tmp; \
+})
+
+#define ATOMIC_WRITE(var, value) do { \
+  __disable_irq(); \
+  (var) = (value); \
+  __enable_irq(); \
+} while(0)
+
+// Variables that need atomic protection when accessed from both ISR and main
 volatile SystemState system_state = SYSTEM_STATE_1;
 volatile SystemState last_state = SYSTEM_STATE_1;
 volatile i2c_flag_t i2c = idle;
 volatile uint8_t mode = 1;
 volatile uint8_t read = 0;
+
+static uint16_t sin_wave_buff[SIN_WAVE_SAMPLES];
 static pcf8591_config_t pcf8591_config = {
   .analog_output_enabled=1,
   .analog_input_programming=four_single_ended,
@@ -162,37 +176,38 @@ void next_state()
 {
   switch (get_system_state())
   {
-  case SYSTEM_STATE_1:
-    if (read)
+    case SYSTEM_STATE_1:
+    if (ATOMIC_READ(read))
     {
-      if (mode == 1 || mode == 3)
-        set_system_state(SYSTEM_STATE_2);
-      else if (mode == 2)
-        set_system_state(SYSTEM_STATE_5);
+      uint8_t mod = ATOMIC_READ(mode);
+      if (mod == 1 || mod == 3)
+      set_system_state(SYSTEM_STATE_2);
+      else if (mod == 2)
+      set_system_state(SYSTEM_STATE_5);
       else
-        mode = 1;
+      mod = 1;
     }
     break;
-  case SYSTEM_STATE_4:
-    if (mode == 1)
+    case SYSTEM_STATE_4:
+    if (ATOMIC_READ(mode) == 1)
       set_system_state(SYSTEM_STATE_1);
-    else if (mode == 3)
+    else if (ATOMIC_READ(mode) == 3)
       set_system_state(SYSTEM_STATE_5);
     break;
   case SYSTEM_STATE_2:
-    if (i2c == tx)
+    if (ATOMIC_READ(i2c) == tx)
       set_system_state(SYSTEM_STATE_3);
     break;
   case SYSTEM_STATE_3:
-    if (i2c == rx)
+    if (ATOMIC_READ(i2c) == rx)
       set_system_state(SYSTEM_STATE_4);
     break;
   case SYSTEM_STATE_5:
-    if (i2c == tx)
+    if (ATOMIC_READ(i2c) == tx)
       set_system_state(SYSTEM_STATE_6);
     break;
   case SYSTEM_STATE_6:
-    if (i2c == rx)
+    if (ATOMIC_READ(i2c) == rx)
       set_system_state(SYSTEM_STATE_7);
     break;
   case SYSTEM_STATE_7:
@@ -214,16 +229,12 @@ static void set_system_state(SystemState new_state)
     HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
   }
 #endif
-  // __disable_irq(); // Bloqueie interrupções temporariamente
-  last_state = system_state;
-  system_state = new_state;
-  // __enable_irq(); // Reative interrupções
+  ATOMIC_WRITE(system_state, new_state);
 }
 
-static SystemState get_system_state(void)
+static inline SystemState get_system_state(void)
 {
-  SystemState state = system_state;
-  return state;
+  return ATOMIC_READ(system_state);;
 }
 
 static void set_pwm_duty(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty)
@@ -238,7 +249,7 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c) { i2c = rx; }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM2)
+  if (htim->Instance == TIM2 && get_system_state() == SYSTEM_STATE_1)
     read = 1;
 }
 
@@ -288,7 +299,7 @@ void populate_sin_wave_buff(uint16_t wave_amplitude)
 HAL_StatusTypeDef PCF8591_read_analog_channel()
 {
   // Read two bytes: first byte is a dummy, second byte is the actual analog value
-  return HAL_I2C_Master_Receive_IT(&I2C_INTERFACE, PCF8591_ADDRESS, (uint8_t *)&pcf8591_value, 2);
+  return HAL_I2C_Master_Receive_DMA(&I2C_INTERFACE, PCF8591_ADDRESS, (uint8_t *)&pcf8591_value, 2);
 }
 
 HAL_StatusTypeDef PCF8591_set_channel_index(pcf8591_channel_t channel_index)
@@ -297,7 +308,7 @@ HAL_StatusTypeDef PCF8591_set_channel_index(pcf8591_channel_t channel_index)
     return HAL_ERROR; // Invalid channel index
 
   pcf8591_config.adc_selected_channel = channel_index;
-  return HAL_I2C_Master_Transmit_IT(&I2C_INTERFACE, PCF8591_ADDRESS, (uint8_t *)&pcf8591_config, 1);
+  return HAL_I2C_Master_Transmit_DMA(&I2C_INTERFACE, PCF8591_ADDRESS, (uint8_t *)&pcf8591_config, 1);
 }
 
 /* USER CODE END 0 */
@@ -357,7 +368,7 @@ int main(void)
       __WFI(); // Wait for interrupt to save power
       break;
     case SYSTEM_STATE_2:
-      read = 0;
+      ATOMIC_WRITE(read, 0);
       PCF8591_set_channel_index(PCF8591_CHANNEL_A0);
       __WFI(); // Wait for interrupt to save power
       break;
@@ -368,10 +379,10 @@ int main(void)
     case SYSTEM_STATE_4:
       pcf8591_value &= 0x00FF; // Ensure we only use the lower 8 bits
       set_pwm_duty(&htim1, TIM_CHANNEL_4, pcf8591_value);
-      i2c = idle;
+      ATOMIC_WRITE(i2c, idle);
       break;
     case SYSTEM_STATE_5:
-      read = 0;
+      ATOMIC_WRITE(read, 0);
       PCF8591_set_channel_index(PCF8591_CHANNEL_A1);
       __WFI(); // Wait for interrupt to save power
       break;
@@ -383,7 +394,7 @@ int main(void)
       pcf8591_value &= 0x00FF; // Ensure we only use the lower 8 bits
       uint16_t new_wave_amplitude = (uint16_t)(pcf8591_value * SIN_WAVE_MAX_AMPLITUDE / UINT8_MAX);
       populate_sin_wave_buff(new_wave_amplitude);
-      i2c = idle;
+      ATOMIC_WRITE(i2c, idle);
       break;
     default:
       break;
