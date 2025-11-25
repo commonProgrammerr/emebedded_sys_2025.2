@@ -45,7 +45,6 @@ typedef enum
   SYSTEM_STATE_5 = 5,  // Config ADC channel for DAC control
   SYSTEM_STATE_6 = 6,  // Read ADC for DAC control
   SYSTEM_STATE_7 = 7,  // Update DAC waveform amplitude
-  SYSTEM_STATE_8 = 8,  // Reserved/unused
 } SystemState;
 
 typedef enum
@@ -62,8 +61,6 @@ typedef enum
 #define I2C_INTERFACE_INSTANCE I2C3
 #define SIN_WAVE_SAMPLES 512
 #define SIN_WAVE_MAX_AMPLITUDE 4095  // 12-bit DAC max value
-/* TODO: Use M_PI from math.h instead of defining custom _PI constant */
-#define _PI 3.141592653589793
 // Define the MAX7219 registers
 /* USER CODE END PD */
 
@@ -169,8 +166,6 @@ void next_state()
   case SYSTEM_STATE_7:
     set_system_state(SYSTEM_STATE_1);
     break;
-  /* FIXME: SYSTEM_STATE_8 is defined but has no transition logic in next_state().
-   * If STATE_8 is used, add proper transition handling here. */
   default:
     break;
   }
@@ -253,7 +248,7 @@ void populate_sin_wave_buff(uint16_t wave_amplitude)
 
   for (size_t i = 0; i < SIN_WAVE_SAMPLES; ++i)
   {
-    double v = (sin(2.0 * _PI * i / SIN_WAVE_SAMPLES) + 1.0) / 2.0;
+    double v = (sin(2.0 * M_PI * i / SIN_WAVE_SAMPLES) + 1.0) / 2.0;
     sin_wave_buff[i] = (uint16_t)(v * wave_amplitude);
   }
 }
@@ -300,9 +295,7 @@ int main(void)
   set_system_state(SYSTEM_STATE_1);
   PCF8591_Init(&I2C_INTERFACE, NULL, PCF8591_TxCpltCallback, PCF8591_RxCpltCallback);
   HAL_TIM_Base_Start_IT(&htim2);            // Start timer for periodic tasks
-  /* FIXME: TIM4 should be started here with HAL_TIM_Base_Start(&htim4) to trigger
-   * DAC DMA conversions when mode 2 is activated. Currently DAC DMA will not work
-   * properly without TIM4 running. */
+  HAL_TIM_Base_Start(&htim4);                // Start TIM4 for DAC DMA triggering
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM for DAC output
   populate_sin_wave_buff(SIN_WAVE_MAX_AMPLITUDE);
   /* USER CODE END 2 */
@@ -390,7 +383,8 @@ void SystemClock_Config(void)
 
   /** Initializes the CPU, AHB and APB buses clocks
    */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
@@ -457,6 +451,7 @@ static void MX_ADC3_Init(void)
   /* USER CODE BEGIN ADC3_Init 2 */
 
   /* USER CODE END ADC3_Init 2 */
+
 }
 
 /**
@@ -759,10 +754,6 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* TODO: Review interrupt priorities. All DMAs set to priority 0 (highest).
-   * Consider assigning different priorities based on criticality:
-   * - Critical real-time peripherals (DAC, ADC): higher priority
-   * - Communication interfaces (UART, I2C): medium priority */
   /* DMA1_Channel2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
@@ -828,7 +819,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(I2C_GND_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 7, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
