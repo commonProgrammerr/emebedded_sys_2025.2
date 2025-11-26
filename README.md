@@ -1,174 +1,154 @@
-# Sistema Embarcado - Projeto I2C/SPI com PCF8591 e MAX7219
+# Sistema Embarcado - Projeto DAC/PWM com PCF8591
 
-Este projeto implementa um sistema embarcado avançado utilizando o microcontrolador STM32L476RG, integrando múltiplos protocolos de comunicação (I2C, SPI, UART) e periféricos. O sistema permite ler valores analógicos do módulo ADC/DAC PCF8591, controlar display LED 8x8 MAX7219, e processar comandos via interface UART, utilizando uma arquitetura modular com drivers especializados.
+Este projeto implementa um sistema embarcado utilizando o microcontrolador STM32L476RG, integrando comunicação I2C com o módulo ADC/DAC PCF8591 e geração de sinais analógicos através de DAC e PWM. O sistema permite ler valores analógicos, controlar amplitudes de onda senoidal, e ajustar ciclos de trabalho PWM baseados em sensores, com alternância de modos através de botão físico.
 
 ## Funcionalidades
 
 ### Comunicação e Protocolos
-- **Interface I2C**: Comunicação com módulo PCF8591 ADC/DAC
-- **Interface SPI**: Controle de display LED 8x8 MAX7219 com DMA
-- **Interface UART**: Recepção e transmissão de comandos via USART2
-- **DMA**: Transferências assíncronas para UART, SPI e I2C
+- **Interface I2C**: Comunicação com módulo PCF8591 ADC/DAC usando DMA
+- **Interface UART**: Debug log via USART2 (não implementado por padrão)
 
-### Processamento de Dados
-- **Processamento de Comandos**: Sistema robusto baseado em strings com buffer circular
-- **Leitura de Canais Analógicos**: 4 canais ADC do PCF8591 (AIN0-AIN3, 8-bit, 0-255)
-- **Controle de DAC**: Saída analógica configurável (0-255) no PCF8591
-- **Detecção de Tendências**: Comparação de leituras consecutivas com indicação visual
+### Processamento de Sinais
+- **Leitura de Canais Analógicos**: 2 canais ADC do PCF8591 (A0, A1, 8-bit, 0-255)
+- **Saída DAC**: Geração de onda senoidal com amplitude variável (12-bit, 0-4095)
+- **Saída PWM**: Controle de duty cycle baseado em sensor (TIM1 CH4)
+- **Controle de Amplitude**: Valor do sensor A1 controla amplitude da onda DAC
+- **Controle PWM**: Valor do sensor A0 controla duty cycle do PWM
 
-### Display e Visualização
-- **Display LED 8x8**: MAX7219 controlado via SPI
-- **Ícones Customizados**: Representações visuais para Temperatura (T), Tensão (V), e Luz (L)
-- **Indicadores de Tendência**: Símbolos +/- para aumento/diminuição de valores
-- **Atualização Periódica**: Display atualizado automaticamente via timer
-- **Display Alternado**: Alternância entre ícone do sensor e tendência
+### Alternância de Modos
+- **Modo 1**: PWM controlado por sensor A0 (padrão)
+- **Modo 2**: DAC com onda senoidal de amplitude controlada por A1
+- **Modo 3**: Ambos PWM e DAC ativos simultaneamente
+- **Botão B1**: Alterna entre os 3 modos de operação
+- **Operação Periódica**: Timer TIM2 dispara leituras automáticas dos sensores
 
-### Arquitetura do Sistema
-- **Máquina de Estados**: 8 estados para controle de fluxo robusto
-- **Drivers Modulares**: Arquitetura separada por periférico
-- **Comunicação Assíncrona**: Operações não-bloqueantes com callbacks
-- **Buffer Circular**: Gerenciamento eficiente de dados UART (1024 bytes)
-- **Economia de Energia**: Uso de WFI (Wait For Interrupt) entre operações
+## Controle e Operação
 
-## Comandos Disponíveis
+### Alternância de Modos (Botão B1)
+O sistema opera em 3 modos alternáveis através do botão B1:
 
-O sistema utiliza **comandos baseados em strings** para controle via UART.
+#### **Modo 1: PWM Controlado por Sensor** (Padrão)
+- PWM ativo no pino TIM1_CH4 (PA11)
+- Duty cycle controlado pelo valor do sensor A0 (0-255 → 0-100%)
+- DAC desabilitado
+- Leitura periódica automática via TIM2
 
-### Leitura de Canais ADC
-- **`Read_AIN0`**: Lê o canal AIN0 e retorna valor via UART
-- **`Read_AIN1`**: Lê o canal AIN1 e retorna valor via UART
-- **`Read_AIN2`**: Lê o canal AIN2 e retorna valor via UART
-- **`Read_AIN3`**: Lê o canal AIN3 e retorna valor via UART
-- **Resposta**: `AIN<N>: <valor>` (onde valor está entre 0-255)
+#### **Modo 2: DAC com Onda Senoidal**
+- DAC ativo no pino PA5 gerando onda senoidal
+- Amplitude controlada pelo valor do sensor A1 (0-255 → 0-4095)
+- PWM desabilitado
+- 512 amostras por período de onda
+- Trigger via TIM4 para DAC DMA
 
-### Controle do DAC
-- **`Set_DAC_<VALOR>`**: Define valor do DAC (0-255)
-  - Exemplo: `Set_DAC_128` configura DAC para valor 128
-  - Exemplo: `Set_DAC_255` configura DAC para valor máximo
-- **Resposta**: `Valor do DAC: <valor>`
+#### **Modo 3: PWM + DAC Simultâneos**
+- PWM ativo (controlado por A0)
+- DAC ativo (amplitude controlada por A1)
+- Ambas as saídas operando simultaneamente
 
-### Comandos de Display (Novos)
-Estes comandos ativam monitoramento contínuo com visualização no display LED 8x8:
-
-- **`Temp`**: Exibe ícone de temperatura (T) e monitora sensor no canal AIN1
-  - Display alterna entre ícone T e indicador de tendência (+/-)
-  - Timer atualiza periodicamente a leitura
-  
-- **`Volt`**: Exibe ícone de tensão (V) e monitora sensor no canal AIN3
-  - Display alterna entre ícone V e indicador de tendência (+/-)
-  - Ideal para monitoramento de voltagem
-  
-- **`LDR`**: Exibe ícone de luz (L) e monitora sensor LDR no canal AIN0
-  - Display alterna entre ícone L e indicador de tendência (+/-)
-  - Detecta variações de luminosidade
-
-### Formato dos Comandos
-- Todos os comandos devem ser terminados com `\n` (newline) ou `\r` (carriage return)
-- Buffer circular de 1024 bytes para comandos longos ou múltiplos comandos
-- Comandos inválidos retornam mensagem: `Unknown command: <comando>`
+### Operação Automática
+- **Timer TIM2**: Dispara leituras periódicas dos sensores quando em STATE_1
+- **DMA I2C**: Leituras e configurações assíncronas do PCF8591
+- **DMA DAC**: Geração contínua de onda senoidal no modo 2
+- **Proteção Atômica**: Variáveis compartilhadas protegidas com `ATOMIC_READ/WRITE`
 
 ## Arquitetura do Sistema
 
 O sistema implementa uma **máquina de estados com 8 estados** para gerenciar a comunicação entre múltiplos periféricos e protocolos de forma eficiente e robusta.
 
 ### Diagrama Geral do Sistema
-![Diagrama de Estados do Sistema](docs/images/state_machine.jpg)
+![Diagrama de Estados do Sistema](docs/images/diagrama_de_estados.svg)
 
-### Processamento de Comandos
-![Diagrama de Estados dos Comandos](docs/images/Diagrama%20de%20estados%20cmd.svg)
 
-*Documentação detalhada disponível em [docs/state_machine_diagram.md](docs/state_machine_diagram.md)*
+### Máquina de Estados (7 Estados):
 
-### Máquina de Estados (8 Estados):
+1. **STATE_1 (Idle)**: Estado inicial, aguarda eventos de timer ou botão
+2. **STATE_2 (Config ADC A0)**: Configura canal A0 do PCF8591 via I2C DMA
+3. **STATE_3 (Read ADC A0)**: Lê sensor A0 para controle PWM
+4. **STATE_4 (Update PWM)**: Atualiza duty cycle do PWM baseado em A0
+5. **STATE_5 (Config ADC A1)**: Configura canal A1 do PCF8591 via I2C DMA
+6. **STATE_6 (Read ADC A1)**: Lê sensor A1 para controle de amplitude DAC
+7. **STATE_7 (Update DAC)**: Recalcula e atualiza buffer de onda senoidal
 
-1. **STATE_1 (Idle)**: Estado inicial, processa comandos UART através do `cmd_tick()`
-2. **STATE_2 (Config ADC)**: Configura canal ADC do PCF8591 via I2C
-3. **STATE_3 (Read ADC)**: Realiza leitura do canal ADC configurado
-4. **STATE_4 (UART TX)**: Transmite resposta formatada via UART
-5. **STATE_5 (Write DAC)**: Configura valor do DAC no PCF8591
-6. **STATE_6 (Display Config)**: Prepara buffer de display e configura canal para monitoramento
-7. **STATE_7 (Monitor Read)**: Lê sensor e determina tendência (+/-)
-8. **STATE_8 (Update Display)**: Atualiza display LED 8x8 via SPI com DMA
+### Arquitetura Simplificada:
 
-### Arquitetura Modular:
+O sistema foi refatorado para uma arquitetura simplificada e integrada:
 
-O sistema foi refatorado para uma arquitetura modular com drivers especializados:
+#### **PCF8591 I2C (inline em main.c)**
+- Comunicação I2C direta com HAL usando DMA
+- Estrutura `pcf8591_config_t` com bitfields para controle do chip
+- Funções: `PCF8591_set_channel_index()`, `PCF8591_read_analog_channel()`
+- Callbacks: `HAL_I2C_MasterTxCpltCallback()`, `HAL_I2C_MasterRxCpltCallback()`
+- Suporte para configuração de canais single-ended e differential
 
-#### **circular_buffer** (circular_buffer.c/h)
-- Estrutura de dados genérica para buffers circulares
-- Capacidade: 1024 bytes configurável
-- Operações: push, pop, empty, full, free_space
-- Thread-safe para uso com interrupções
+#### **Geração de Onda Senoidal**
+- Buffer estático `sin_wave_buff[512]` com amostras da onda
+- Função `populate_sin_wave_buff(amplitude)` calcula valores usando `sin()` de `math.h`
+- DAC DMA transfere buffer continuamente
+- TIM4 dispara conversões DAC (TRGO)
 
-#### **cmd_driver** (cmd_driver.c/h)
-- Driver dedicado para processamento de comandos UART
-- Buffer circular interno de 1024 bytes
-- Máquina de estados: IDLE → RECEIVING → READY
-- Detecção automática de terminadores (\n, \r)
-- Callback assíncrono quando comando completo é recebido
-- Integração transparente com DMA UART
+#### **Controle PWM**
+- TIM1 Channel 4 gera sinal PWM
+- Período: 65535 (16-bit)
+- Função `set_pwm_duty(htim, channel, duty)` atualiza compare value
+- Duty cycle proporcional ao valor do sensor (0-255 → 0-100%)
 
-#### **PCF8591_driver** (PCF8591_driver.c/h)
-- Driver I2C para módulo ADC/DAC PCF8591
-- Operações assíncronas com callbacks
-- Funções: Init, set_channel, read_analog, write_dac
-- Buffer de dados para 4 canais ADC
-- Suporte para múltiplas instâncias I2C
+#### **Proteção de Concorrência**
+- Macros `ATOMIC_READ(var)` e `ATOMIC_WRITE(var, value)`
+- Desabilitam interrupções durante acesso a variáveis compartilhadas
+- Protegem `system_state`, `i2c`, `mode`, `read` de race conditions
+- Essencial para sincronização entre ISR e main loop
 
-#### **MAX7219_driver** (MAX7219_driver.c/h)
-- Driver SPI para display LED 8x8 MAX7219
-- Buffer de tela (8 bytes para 8 linhas)
-- Controle de CS (Chip Select) via GPIO
-- Configuração de brilho, modo scan, decode mode
-- Atualização assíncrona com DMA e callback
-- Funções: Init, Write, UpdateScreen
+### Fluxos de Operação:
 
-### Fluxos de Operação Principais:
-
-#### Leitura de ADC (Read_AIN):
+#### Modo 1 (PWM Controlado):
 ```
-CMD UART → STATE_1 (parse) → STATE_2 (config I2C) → STATE_3 (read I2C) 
-→ STATE_4 (UART TX) → STATE_1 (idle)
+TIM2 Interrupt → STATE_1 (set read flag)
+→ STATE_2 (config A0) → STATE_3 (read A0) 
+→ STATE_4 (update PWM) → STATE_1 (idle)
 ```
 
-#### Configuração DAC (Set_DAC):
+#### Modo 2 (DAC Controlado):
 ```
-CMD UART → STATE_1 (parse) → STATE_5 (write DAC) → STATE_4 (confirm) 
+TIM2 Interrupt → STATE_1 (set read flag)
+→ STATE_5 (config A1) → STATE_6 (read A1)
+→ STATE_7 (update amplitude) → STATE_1 (idle)
+(DAC DMA runs continuously triggered by TIM4)
+```
+
+#### Modo 3 (PWM + DAC):
+```
+TIM2 Interrupt → STATE_1 (set read flag)
+→ STATE_2 (config A0) → STATE_3 (read A0) → STATE_4 (update PWM)
+→ STATE_5 (config A1) → STATE_6 (read A1) → STATE_7 (update amplitude)
 → STATE_1 (idle)
 ```
 
-#### Monitoramento com Display (Temp/Volt/LDR):
+#### Alternância de Modos (Button B1):
 ```
-CMD UART → STATE_1 (parse) → STATE_6 (prep display + config ADC) 
-→ STATE_7 (read + trend) → STATE_8 (update SPI) → STATE_1 (idle)
-↓
-Timer → STATE_8 (periodic update) → STATE_1 (idle)
+Button Press (EXTI) → HAL_GPIO_EXTI_Callback()
+→ Increment mode (1→2→3→1)
+→ Start/Stop DAC DMA or PWM accordingly
 ```
 
-### Características Avançadas:
-
-- **Comunicação Assíncrona**: Todas operações I2C, SPI e UART utilizam DMA/IT
-- **Callbacks HAL**: Sincronização precisa entre periféricos e estados
-- **Transições Atômicas**: Funções `set_system_state()` e `get_system_state()`
-- **WFI**: Wait For Interrupt para economia de energia
-- **Timer Periódico**: TIM2 dispara atualizações automáticas do display
-- **Detecção de Tendências**: Comparação de leituras consecutivas com feedback visual
-- **Validação de Comandos**: Parser robusto com mensagens de erro claras
-
-## Hardware Requerido
+## Configuração de Hardware
 
 - **Microcontrolador**: STM32L476RG (Nucleo-L476RG)
+  - **Saída DAC**: Pino PA5 do STM32
+    - Resolução: 12-bit (0-4095)
+    - Onda senoidal: 512 amostras por período
+    - Trigger: TIM4 TRGO
+  - **Saída PWM**: Pino PA11 (TIM1_CH4)
+    - Período: 65535 (16-bit)
+    - Duty cycle variável: 0-100%
+  - **Botão**: B1 (PC13) para alternância de modos
+  - **Timers**: 
+    - TIM2: Leituras periódicas (500ms)
+    - TIM4: Trigger para DAC DMA
+  - **DMA**: Canais para I2C3 (TX/RX) e DAC CH2
 - **Módulo ADC/DAC**: PCF8591 (endereço I2C: 0x48)
-  - Conexões I2C: SDA e SCL conectados ao I2C3 do STM32
-  - 4 canais ADC (A0-A3) de 8-bit (0-255)
-  - 1 canal DAC de 8-bit (0-255)
-- **Display LED**: MAX7219 com matriz LED 8x8
-  - Conexões SPI: MOSI, SCK conectados ao SPI1 do STM32
-  - CS: GPIO PA4 (configurável)
-  - Alimentação: 5V
-- **UART**: USART2 para comunicação serial (115200 baud, 8N1)
-- **Timer**: TIM2 para atualização periódica do display
-- **DMA**: Canais DMA para I2C3, SPI1 e USART2
+  - Conexões I2C: SDA (PC1) e SCL (PC0) conectados ao I2C3 do STM32
+  - 2 canais ADC utilizados: A0 (para PWM) e A1 (para DAC)
+  - Resolução ADC: 8-bit (0-255)
 
 ## Estrutura do Projeto
 
@@ -177,20 +157,16 @@ Timer → STATE_8 (periodic update) → STATE_1 (idle)
 ├── Core/
 │   ├── Inc/                  # Arquivos de cabeçalho
 │   │   ├── main.h           # Definições principais e protótipos
-│   │   ├── circular_buffer.h # API do buffer circular
-│   │   ├── cmd_driver.h     # API do driver de comandos UART
-│   │   ├── PCF8591_driver.h # API do driver I2C PCF8591
-│   │   ├── MAX7219_driver.h # API do driver SPI MAX7219
+│   │   ├── circular_buffer.h # API do buffer circular (legado)
+│   │   ├── cmd_driver.h     # API do driver de comandos UART (legado)
 │   │   ├── stm32l4xx_hal_conf.h # Configuração HAL
 │   │   └── stm32l4xx_it.h   # Tratadores de interrupção
 │   └── Src/                 # Código-fonte
-│       ├── main.c           # Programa principal e máquina de estados
-│       ├── circular_buffer.c # Implementação do buffer circular
-│       ├── cmd_driver.c     # Implementação do driver de comandos
-│       ├── PCF8591_driver.c # Implementação do driver PCF8591
-│       ├── MAX7219_driver.c # Implementação do driver MAX7219
-│       ├── stm32l4xx_hal_msp.c # Inicialização MSP
-│       ├── stm32l4xx_it.c   # Implementação das interrupções
+│       ├── main.c           # Programa principal, máquina de estados e PCF8591
+│       ├── circular_buffer.c # Buffer circular (legado)
+│       ├── cmd_driver.c     # Driver de comandos (legado)
+│       ├── stm32l4xx_hal_msp.c # Inicialização MSP (DMA, GPIO, I2C, DAC, PWM)
+│       ├── stm32l4xx_it.c   # Handlers de interrupção (DMA, I2C, EXTI)
 │       └── system_stm32l4xx.c # Inicialização do sistema
 ├── Drivers/                 # Drivers HAL e CMSIS da ST
 │   ├── STM32L4xx_HAL_Driver/ # Biblioteca HAL
@@ -212,110 +188,102 @@ Timer → STATE_8 (periodic update) → STATE_1 (idle)
 ### 1. Configuração Inicial
 Após compilar e gravar o firmware:
 
-1. Conecte o módulo PCF8591 ao STM32L476RG via I2C3 (SDA/SCL)
-2. Conecte o display MAX7219 ao STM32L476RG via SPI1 (MOSI/SCK/CS)
-3. Conecte sensores aos canais ADC do PCF8591:
-   - AIN0: Sensor LDR (Luz)
-   - AIN1: Sensor de Temperatura
-   - AIN2: Livre
-   - AIN3: Sensor de Tensão
-4. Abra um terminal serial (115200 baud, 8N1)
-5. Sistema iniciará no STATE_1 (idle) aguardando comandos
+1. **Conecte o PCF8591** ao STM32L476RG:
+   - SDA: PC1 (I2C3_SDA)
+   - SCL: PC0 (I2C3_SCL)
+   - VCC: 3.3V ou 5V
+   - GND: GND
 
-### 2. Lendo Canais ADC
-Para ler um canal analógico específico, envie o comando seguido de Enter:
-```
-> Read_AIN0
-AIN0: 128
+2. **Conecte sensores** aos canais ADC do PCF8591:
+   - **AIN0**: Potenciômetro ou sensor para controle PWM (0-255)
+   - **AIN1**: Potenciômetro ou sensor para controle amplitude DAC (0-255)
 
-> Read_AIN2
-AIN2: 255
-```
+3. **Saídas do STM32**:
+   - **PA5 (DAC_OUT)**: Conecte osciloscópio ou alto-falante para ver/ouvir onda senoidal
+   - **PA11 (TIM1_CH4)**: Conecte LED ou osciloscópio para ver PWM
 
-### 3. Controlando o DAC
-Para definir o valor do DAC (0-255):
-```
-> Set_DAC_128
-Valor do DAC: 128
+4. **Botão B1** (PC13): Pré-instalado na placa Nucleo
 
-> Set_DAC_0
-Valor do DAC: 0
-```
+5. Sistema iniciará no **Modo 1** (PWM ativo)
 
-### 4. Monitoramento com Display Visual (Novo)
+### 2. Operação no Modo 1 (PWM - Padrão)
+1. Sistema inicia neste modo automaticamente
+2. **Ajuste o potenciômetro/sensor em AIN0**:
+   - Valor baixo (próximo a 0): Duty cycle próximo a 0%
+   - Valor médio (128): Duty cycle ~50%
+   - Valor alto (255): Duty cycle ~100%
+3. Observe a saída PWM em **PA11** com osciloscópio ou LED
+4. Atualização automática a cada 500ms (TIM2)
 
-#### Monitoramento de Temperatura:
-```
-> Temp
-```
-- Display mostra ícone "T"
-- Sistema lê periodicamente o canal AIN1
-- Display alterna entre ícone T e indicador de tendência (+/-)
-- Atualização automática via timer
+### 3. Mudança para Modo 2 (DAC)
+1. **Pressione o botão B1** uma vez
+2. PWM é desativado automaticamente
+3. DAC começa a gerar onda senoidal em **PA5**
+4. **Ajuste o potenciômetro/sensor em AIN1**:
+   - Valor baixo: Amplitude próxima a zero (sem onda)
+   - Valor médio (128): Amplitude ~2048 (~1.65V p-p)
+   - Valor alto (255): Amplitude máxima 4095 (~3.3V p-p)
+5. Conecte osciloscópio ou alto-falante para visualizar/ouvir a onda
+6. Frequência da onda determinada por TIM4 period
 
-#### Monitoramento de Tensão:
-```
-> Volt
-```
-- Display mostra ícone "V"
-- Sistema lê periodicamente o canal AIN3
-- Indicador visual de aumento/diminuição de tensão
-- Ideal para monitorar alimentação ou bateria
+### 4. Mudança para Modo 3 (PWM + DAC)
+1. **Pressione o botão B1** novamente
+2. PWM é reativado mantendo DAC ativo
+3. **AIN0 controla PWM** (PA11)
+4. **AIN1 controla amplitude DAC** (PA5)
+5. Ambas as saídas operam simultaneamente
+6. Ideal para controles independentes
 
-#### Monitoramento de Luz (LDR):
-```
-> LDR
-```
-- Display mostra ícone "L"
-- Sistema lê periodicamente o canal AIN0
-- Detecta variações de luminosidade
-- Indicador +/- mostra se ambiente está clareando ou escurecendo
-
-### 5. Indicadores de Tendência
-- **Símbolo (+)**: Valor aumentou desde última leitura
-- **Símbolo (-)**: Valor diminuiu desde última leitura
-- Display alterna automaticamente entre ícone do sensor e tendência
-- Frequência de atualização controlada por TIM2
-
-### 6. Comandos Inválidos
-O sistema valida todos os comandos e retorna feedback em caso de erro:
-```
-> InvalidCommand
-Unknown command: InvalidCommand
-```
+### 5. Retorno ao Modo 1
+1. **Pressione o botão B1** mais uma vez
+2. DAC é desativado
+3. Retorna ao Modo 1 (apenas PWM)
+4. Ciclo continua: Modo 1 → Modo 2 → Modo 3 → Modo 1...
 
 ## Configuração dos Periféricos
 
 ### PCF8591 (ADC/DAC via I2C3)
-- **Endereço I2C**: 0x48 (padrão)
-- **Canais ADC**: A0, A1, A2, A3 (8-bit, 0-255)
-- **DAC**: Saída analógica de 8-bit (0-255)
+- **Endereço I2C**: 0x48 (7-bit), 0x90 (8-bit shifted)
+- **Pinos I2C3**: PC0 (SCL), PC1 (SDA)
+- **Canais ADC utilizados**: A0 (PWM control), A1 (DAC amplitude)
+- **Resolução ADC**: 8-bit (0-255)
 - **Alimentação**: 3.3V ou 5V
-- **Modo de Operação**: 4 canais single-ended
+- **Modo de Operação**: 4 canais single-ended (`four_single_ended = 0b00`)
 - **Clock I2C**: 100 kHz (Standard Mode)
+- **DMA**: Habilitado para TX e RX
 
-### MAX7219 (Display LED 8x8 via SPI1)
-- **Interface**: SPI Mode 0 (CPOL=0, CPHA=0)
-- **Clock SPI**: Até 10 MHz
-- **CS (Chip Select)**: GPIO PA4
-- **Matriz LED**: 8x8 pixels
-- **Brilho**: Configurável (0-15)
-- **Modo Decodificação**: Desabilitado (controle direto de pixels)
-- **Scan Limit**: 8 dígitos (todas as linhas ativas)
+### DAC1 (Saída Analógica)
+- **Pino**: PA5 (DAC1_OUT2)
+- **Resolução**: 12-bit (0-4095)
+- **Alinhamento**: Right-aligned
+- **Trigger**: TIM4 TRGO (Timer 4 Update Event)
+- **DMA**: Channel 4 para transferência contínua do buffer
+- **Buffer**: 512 amostras de onda senoidal
+- **Forma de onda**: Senoidal calculada com `sin()` de `math.h`
 
-### UART (USART2)
-- **Baudrate**: 115200 bps
-- **Data bits**: 8
-- **Parity**: None
-- **Stop bits**: 1
-- **Flow control**: None
-- **DMA**: RX e TX habilitados
+### TIM1 (PWM Output)
+- **Pino**: PA11 (TIM1_CH4)
+- **Prescaler**: 0 (clock total)
+- **Período (ARR)**: 65535 (16-bit)
+- **Modo**: PWM Mode 1
+- **Compare Value**: Calculado como `(Period * duty) / 255`
+- **Frequência PWM**: ~1.2 kHz (80 MHz / 65536)
 
-### Timer (TIM2)
-- **Função**: Atualização periódica do display
-- **Período**: Configurável via prescaler e ARR
+### TIM2 (Trigger Periódico)
+- **Função**: Dispara leituras de sensores periodicamente
+- **Prescaler**: 7999 (divide por 8000)
+- **Período (ARR)**: 500
+- **Frequência de Atualização**: ~2 Hz (a cada 500ms)
 - **Modo**: Interruption mode
-- **Função**: Dispara STATE_8 quando em STATE_1
+- **Callback**: `HAL_TIM_PeriodElapsedCallback()`
+
+### TIM4 (Trigger DAC)
+- **Função**: Trigger para conversões DAC DMA
+- **Prescaler**: 7999
+- **Período (ARR)**: 10
+- **Frequência**: ~1 kHz
+- **Master Mode**: Update event (TRGO)
+- **Conectado**: DAC1 Channel 2 trigger
 
 ## Pré-requisitos
 
@@ -409,110 +377,6 @@ Para contribuir com este projeto:
 - Utilize breakpoints nos callbacks para verificar fluxo
 - Verifique timeouts de I2C/SPI para detectar problemas de hardware
 - Use osciloscópio para analisar sinais I2C/SPI em caso de falhas
-
-### Adicionando Novos Sensores
-Para adicionar um novo sensor ao sistema:
-
-1. **Defina o Canal ADC**: Escolha um dos 4 canais (AIN0-AIN3)
-2. **Crie Ícone no Display**: Adicione definição em `main.c` (formato 8 bytes)
-3. **Adicione Comando**: Modifique `process_uart_commands()` para reconhecer novo comando
-4. **Configure Buffer**: Adicione ponteiro para ícone em `display_buffer[1]`
-5. **Teste**: Verifique leitura ADC e exibição no display
-
-Exemplo:
-```c
-// Em main.c
-#define HUMIDITY_SCREEN { \
-    0b00000000,           \
-    0b00111100,           \
-    // ... padrão 8x8
-}
-uint8_t humidity_screen[] = HUMIDITY_SCREEN;
-
-// Em process_uart_commands()
-else if (strncmp(cmd, "Humid", 5) == 0)
-{
-    display_buffer[1] = humidity_screen;
-    channel_index = 2; // Usar AIN2
-}
-```
-
-### Modificando Estados
-Para adicionar novos estados à máquina:
-
-1. **Atualize Enum**: Adicione novo estado em `typedef enum SystemState`
-2. **Adicione Case**: Inclua novo case no `switch(get_system_state())`
-3. **Configure Transições**: Atualize callbacks para transitar corretamente
-4. **Documente**: Atualize diagrama de estados e documentação
-5. **Teste Fluxo**: Verifique todas as transições possíveis
-
-## Troubleshooting
-
-### Problemas Comuns:
-
-#### 1. I2C não responde
-- Verifique conexões SDA/SCL e pull-ups (4.7kΩ recomendado)
-- Confirme endereço I2C do PCF8591 (0x48 padrão)
-- Verifique alimentação do PCF8591
-- Use osciloscópio/analisador lógico para verificar sinais
-
-#### 2. Valores ADC incorretos
-- Confirme alimentação estável do PCF8591 (3.3V ou 5V)
-- Verifique conexão do sensor ao canal correto (AIN0-AIN3)
-- Confirme que sensor fornece tensão dentro da faixa (0-Vcc)
-- Leia canal múltiplas vezes para descartar primeira leitura
-
-#### 3. Display LED não acende
-- Verifique conexões SPI (MOSI, SCK, CS)
-- Confirme alimentação do MAX7219 (5V recomendado)
-- Verifique CS (deve ser PA4 por padrão)
-- Confirme matriz LED está corretamente conectada ao MAX7219
-- Teste com comandos simples (ex: `Temp`)
-
-#### 4. Display mostra padrão incorreto
-- Verifique orientação da matriz LED
-- Confirme ordem dos pinos do display
-- Ajuste configuração de scan limit e decode mode
-- Verifique definição dos ícones em `main.c`
-
-#### 5. UART não funciona
-- Verifique baudrate (115200 bps)
-- Confirme configuração do terminal (8N1, sem flow control)
-- Teste conexão TX/RX (podem estar invertidas)
-- Verifique se driver USB-UART está instalado
-
-#### 6. Comandos não reconhecidos
-- Certifique-se de usar sintaxe correta:
-  - `Read_AIN0` (não `read_ain0` ou `ReadAIN0`)
-  - `Set_DAC_128` (não `SetDAC128` ou `Set_DAC 128`)
-  - `Temp` (não `temp` ou `TEMP`)
-- Sempre termine comandos com Enter (\n) ou Carriage Return (\r)
-- Verifique buffer circular (1024 bytes) não está cheio
-
-#### 7. Sistema travado
-- Reset do microcontrolador (botão RESET)
-- Verifique se há deadlock em operações I2C/SPI
-- Confirme que callbacks estão sendo chamados
-- Use modo DEBUG para ver transições de estado
-- Verifique timeouts de I2C/SPI
-
-#### 8. Display não atualiza periodicamente
-- Confirme TIM2 está iniciado (`HAL_TIM_Base_Start_IT`)
-- Verifique callback `HAL_TIM_PeriodElapsedCallback`
-- Confirme sistema retorna para STATE_1 após operações
-- Verifique se comando de monitoramento foi enviado (Temp/Volt/LDR)
-
-#### 9. Tendência sempre mostra mesmo símbolo
-- Verifique se sensor está realmente variando
-- Confirme leitura anterior está sendo salva corretamente
-- Verifique lógica de comparação em `PCF8591_RxCpltCallback`
-- Teste com valores conhecidos mudando fisicamente o sensor
-
-#### 10. Compilação falha
-- Execute `make clean` antes de `make`
-- Verifique se todos os arquivos .c/.h estão no Makefile
-- Confirme toolchain ARM está instalado corretamente
-- Verifique espaço em disco disponível
 
 ## Referências
 
