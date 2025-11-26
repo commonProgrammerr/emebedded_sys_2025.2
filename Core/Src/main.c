@@ -134,6 +134,7 @@ volatile SystemState last_state = SYSTEM_STATE_1;
 volatile i2c_flag_t i2c = idle;
 volatile uint8_t mode = 1;
 volatile uint8_t read = 0;
+volatile uint8_t click = 0;
 
 static uint16_t sin_wave_buff[SIN_WAVE_SAMPLES];
 static pcf8591_config_t pcf8591_config = {
@@ -162,6 +163,7 @@ static SystemState get_system_state(void);
 static void set_system_state(SystemState new_state);
 static void set_pwm_duty(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty_percent);
 void next_state();
+void switch_mode();
 void populate_sin_wave_buff(uint16_t wave_amplitude);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
@@ -218,6 +220,26 @@ void next_state()
   }
 }
 
+void switch_mode()
+{
+  ATOMIC_WRITE(mode, (mode % 3) + 1);
+  switch (ATOMIC_READ(mode))
+  {
+    case 1:
+    default:
+    /* TODO: Check HAL return values and handle errors appropriately */
+    HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2); // Stop DAC DMA
+    break;
+    case 2:
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4); // Stop PWM
+    /* TODO: Verify HAL_DAC_Start_DMA return value before proceeding */
+    HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)sin_wave_buff, SIN_WAVE_SAMPLES, DAC_ALIGN_12B_R);
+    break;
+    case 3:
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
+    break;
+  }
+}
 // Safer state transitions
 static void set_system_state(SystemState new_state)
 {
@@ -255,28 +277,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  /* TODO: Add debouncing logic to prevent multiple mode switches from button bouncing */
-  if (GPIO_Pin == B1_Pin && get_system_state() != SYSTEM_STATE_7)
-  {
-    mode = (mode % 3) + 1;
-
-    switch (mode)
-    {
-    case 1:
-    default:
-      /* TODO: Check HAL return values and handle errors appropriately */
-      HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2); // Stop DAC DMA
-      break;
-    case 2:
-      HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4); // Stop PWM
-      /* TODO: Verify HAL_DAC_Start_DMA return value before proceeding */
-      HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)sin_wave_buff, SIN_WAVE_SAMPLES, DAC_ALIGN_12B_R);
-      break;
-    case 3:
-      HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
-      break;
-    }
-  }
+  if (GPIO_Pin == B1_Pin && !click)
+    click=1;
+  
 }
 
 void populate_sin_wave_buff(uint16_t wave_amplitude)
@@ -365,17 +368,22 @@ int main(void)
     switch (get_system_state())
     {
     case SYSTEM_STATE_1:
-      __WFI(); // Wait for interrupt to save power
-      break;
+        ATOMIC_WRITE(click, 0);
+        __WFI(); // Wait for interrupt to save power
+        
+        if(ATOMIC_READ(click))
+          switch_mode();
+        ATOMIC_WRITE(click, 0);
+        break;
     case SYSTEM_STATE_2:
-      ATOMIC_WRITE(read, 0);
-      PCF8591_set_channel_index(PCF8591_CHANNEL_A0);
-      __WFI(); // Wait for interrupt to save power
-      break;
+        ATOMIC_WRITE(read, 0);
+        PCF8591_set_channel_index(PCF8591_CHANNEL_A0);
+        __WFI(); // Wait for interrupt to save power
+        break;
     case SYSTEM_STATE_3:
-      PCF8591_read_analog_channel();
-      __WFI(); // Wait for interrupt to save power
-      break;
+        PCF8591_read_analog_channel();
+        __WFI(); // Wait for interrupt to save power
+        break;
     case SYSTEM_STATE_4:
       pcf8591_value &= 0x00FF; // Ensure we only use the lower 8 bits
       set_pwm_duty(&htim1, TIM_CHANNEL_4, pcf8591_value);
