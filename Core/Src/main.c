@@ -29,21 +29,15 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-/* TODO: Add comprehensive documentation for each state describing:
- * - What the state does
- * - Entry conditions
- * - Exit conditions and next states
- * - Which peripherals are active
- * - Expected timing/duration */
 typedef enum
 {
-  SYSTEM_STATE_1 = 1,  // Idle state - waiting for events
-  SYSTEM_STATE_2 = 2,  // Config ADC channel via I2C
-  SYSTEM_STATE_3 = 3,  // Read ADC channel via I2C
-  SYSTEM_STATE_4 = 4,  // Process PWM duty cycle update
-  SYSTEM_STATE_5 = 5,  // Config ADC channel for DAC control
-  SYSTEM_STATE_6 = 6,  // Read ADC for DAC control
-  SYSTEM_STATE_7 = 7,  // Update DAC waveform amplitude
+  SYSTEM_STATE_1 = 1, // Idle state - waiting for events
+  SYSTEM_STATE_2 = 2, // Config ADC channel via I2C
+  SYSTEM_STATE_3 = 3, // Read ADC channel via I2C
+  SYSTEM_STATE_4 = 4, // Process PWM duty cycle update
+  SYSTEM_STATE_5 = 5, // Config ADC channel for DAC control
+  SYSTEM_STATE_6 = 6, // Read ADC for DAC control
+  SYSTEM_STATE_7 = 7, // Update DAC waveform amplitude
 } SystemState;
 
 typedef enum
@@ -53,13 +47,15 @@ typedef enum
   tx = 2,
 } i2c_flag_t;
 
-typedef enum {
+typedef enum
+{
   PCF8591_CHANNEL_A0 = 0,
   PCF8591_CHANNEL_A1 = 1,
   PCF8591_CHANNEL_A2 = 2,
   PCF8591_CHANNEL_A3 = 3,
 } pcf8591_channel_t;
-typedef enum {
+typedef enum
+{
   four_single_ended = 0b00,
   three_differential = 0b01,
   single_ended_and_differential_mixed = 0b10,
@@ -68,12 +64,12 @@ typedef enum {
 
 typedef struct pcf8591_config
 {
-  uint8_t :1;
-  uint8_t analog_output_enabled: 1;
-  analog_input_programming_t analog_input_programming: 2;
-  uint8_t :1;
-  uint8_t auto_increment_flag: 1;
-  pcf8591_channel_t adc_selected_channel: 2;
+  uint8_t : 1;
+  uint8_t analog_output_enabled : 1;
+  analog_input_programming_t analog_input_programming : 2;
+  uint8_t : 1;
+  uint8_t auto_increment_flag : 1;
+  pcf8591_channel_t adc_selected_channel : 2;
 } pcf8591_config_t;
 
 /* USER CODE END PTD */
@@ -84,7 +80,7 @@ typedef struct pcf8591_config
 #define I2C_INTERFACE hi2c3
 #define I2C_INTERFACE_INSTANCE I2C3
 #define SIN_WAVE_SAMPLES 512
-#define SIN_WAVE_MAX_AMPLITUDE 4095  // 12-bit DAC max value
+#define SIN_WAVE_MAX_AMPLITUDE 4095 // 12-bit DAC max value
 // Define the MAX7219 registers
 /* USER CODE END PD */
 
@@ -116,17 +112,19 @@ DMA_HandleTypeDef hdma_usart2_tx;
 
 // Helper macros for atomic access
 #define ATOMIC_READ(var) ({ \
-  __disable_irq(); \
-  typeof(var) tmp = (var); \
-  __enable_irq(); \
-  tmp; \
+  __disable_irq();          \
+  typeof(var) tmp = (var);  \
+  __enable_irq();           \
+  tmp;                      \
 })
 
-#define ATOMIC_WRITE(var, value) do { \
-  __disable_irq(); \
-  (var) = (value); \
-  __enable_irq(); \
-} while(0)
+#define ATOMIC_WRITE(var, value) \
+  do                             \
+  {                              \
+    __disable_irq();             \
+    (var) = (value);             \
+    __enable_irq();              \
+  } while (0)
 
 // Variables that need atomic protection when accessed from both ISR and main
 volatile SystemState system_state = SYSTEM_STATE_1;
@@ -138,10 +136,10 @@ volatile uint8_t click = 0;
 
 static uint16_t sin_wave_buff[SIN_WAVE_SAMPLES];
 static pcf8591_config_t pcf8591_config = {
-  .analog_output_enabled=1,
-  .analog_input_programming=four_single_ended,
-  .auto_increment_flag=0,
-  .adc_selected_channel=PCF8591_CHANNEL_A0,
+    .analog_output_enabled = 1,
+    .analog_input_programming = four_single_ended,
+    .auto_increment_flag = 0,
+    .adc_selected_channel = PCF8591_CHANNEL_A0,
 };
 static uint16_t pcf8591_value = 0;
 
@@ -228,7 +226,9 @@ void switch_mode()
     case 1:
     default:
     /* TODO: Check HAL return values and handle errors appropriately */
-    HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2); // Stop DAC DMA
+    HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2);  // Stop DAC DMA
+    HAL_DAC_Stop(&hdac1, DAC_CHANNEL_2);      // Stop DAC DMA
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
     break;
     case 2:
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4); // Stop PWM
@@ -236,6 +236,7 @@ void switch_mode()
     HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)sin_wave_buff, SIN_WAVE_SAMPLES, DAC_ALIGN_12B_R);
     break;
     case 3:
+    HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)sin_wave_buff, SIN_WAVE_SAMPLES, DAC_ALIGN_12B_R);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
     break;
   }
@@ -256,13 +257,12 @@ static void set_system_state(SystemState new_state)
 
 static inline SystemState get_system_state(void)
 {
-  return ATOMIC_READ(system_state);;
+  return ATOMIC_READ(system_state);
 }
 
 static void set_pwm_duty(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty)
 {
-  uint32_t pulse = (htim->Init.Period * duty) / UINT8_MAX; // compare value
-  __HAL_TIM_SET_COMPARE(htim, channel, pulse);
+  __HAL_TIM_SET_COMPARE(htim, channel, duty);
 }
 
 void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c) { i2c = tx; }
@@ -272,7 +272,9 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c) { i2c = rx; }
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM2 && get_system_state() == SYSTEM_STATE_1)
+  {
     read = 1;
+  }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -295,7 +297,7 @@ void populate_sin_wave_buff(uint16_t wave_amplitude)
   for (size_t i = 0; i < SIN_WAVE_SAMPLES; ++i)
   {
     double v = (sin(2.0 * M_PI * i / SIN_WAVE_SAMPLES) + 1.0) / 2.0;
-    sin_wave_buff[i] = (uint16_t)(v * wave_amplitude);
+      sin_wave_buff[i] = (uint16_t)(v * wave_amplitude); // saves on buffer
   }
 }
 
@@ -310,7 +312,8 @@ HAL_StatusTypeDef PCF8591_set_channel_index(pcf8591_channel_t channel_index)
   if (channel_index > 3)
     return HAL_ERROR; // Invalid channel index
 
-  pcf8591_config.adc_selected_channel = channel_index;
+  pcf8591_config.adc_selected_channel = channel_index; // Set the ADC channel index
+  // send the updated configuration to the PCF8591
   return HAL_I2C_Master_Transmit_DMA(&I2C_INTERFACE, PCF8591_ADDRESS, (uint8_t *)&pcf8591_config, 1);
 }
 
@@ -355,10 +358,10 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   set_system_state(SYSTEM_STATE_1);
-  HAL_TIM_Base_Start_IT(&htim2);            // Start timer for periodic tasks
-  HAL_TIM_Base_Start(&htim4);                // Start TIM4 for DAC DMA triggering
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM for DAC output
-  populate_sin_wave_buff(SIN_WAVE_MAX_AMPLITUDE);
+  HAL_TIM_Base_Start_IT(&htim2);                     // Start timer for periodic tasks
+  HAL_TIM_Base_Start(&htim4);                        // Start TIM4 for DAC DMA triggering
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);          // Start PWM for DAC output
+  populate_sin_wave_buff(SIN_WAVE_MAX_AMPLITUDE, 0); // Initialize sine wave buffer with maximum amplitude
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -376,38 +379,38 @@ int main(void)
         ATOMIC_WRITE(click, 0);
         break;
     case SYSTEM_STATE_2:
-        ATOMIC_WRITE(read, 0);
-        PCF8591_set_channel_index(PCF8591_CHANNEL_A0);
-        __WFI(); // Wait for interrupt to save power
+      ATOMIC_WRITE(read, 0);                         // reset read flag
+      PCF8591_set_channel_index(PCF8591_CHANNEL_A3); // set channel to A3 (LDR)
+      __WFI();                                       // Wait for interrupt to save power
         break;
     case SYSTEM_STATE_3:
-        PCF8591_read_analog_channel();
-        __WFI(); // Wait for interrupt to save power
+      PCF8591_read_analog_channel(); // read analog value from selected channel
+      __WFI();                       // Wait for interrupt to save power
         break;
     case SYSTEM_STATE_4:
-      pcf8591_value &= 0x00FF; // Ensure we only use the lower 8 bits
-      set_pwm_duty(&htim1, TIM_CHANNEL_4, pcf8591_value);
-      ATOMIC_WRITE(i2c, idle);
+      pcf8591_value &= 0x00FF;                            // Ensure we only use the lower 8 bits
+      set_pwm_duty(&htim1, TIM_CHANNEL_4, pcf8591_value); // Update PWM duty cycle with LDR value
+      ATOMIC_WRITE(i2c, idle);                            // reset i2c flag
       break;
     case SYSTEM_STATE_5:
-      ATOMIC_WRITE(read, 0);
-      PCF8591_set_channel_index(PCF8591_CHANNEL_A1);
-      __WFI(); // Wait for interrupt to save power
+      ATOMIC_WRITE(read, 0);                         // reset read flag
+      PCF8591_set_channel_index(PCF8591_CHANNEL_A0); // set channel to A0 (Potentiometer)
+      __WFI();                                       // Wait for interrupt to save power
       break;
     case SYSTEM_STATE_6:
-      PCF8591_read_analog_channel();
-      __WFI(); // Wait for interrupt to save power
+      PCF8591_read_analog_channel(); // read analog value from selected channel
+      __WFI();                       // Wait for interrupt to save power
       break;
     case SYSTEM_STATE_7:
-      pcf8591_value &= 0x00FF; // Ensure we only use the lower 8 bits
-      uint16_t new_wave_amplitude = (uint16_t)(pcf8591_value * SIN_WAVE_MAX_AMPLITUDE / UINT8_MAX);
-      populate_sin_wave_buff(new_wave_amplitude);
-      ATOMIC_WRITE(i2c, idle);
+      pcf8591_value &= 0x00FF;                                                                      // Ensure we only use the lower 8 bits
+      uint16_t new_wave_amplitude = (uint16_t)((UINT8_MAX - pcf8591_value) * SIN_WAVE_MAX_AMPLITUDE / UINT8_MAX); // Calculate new wave amplitude based on potentiometer value
+      populate_sin_wave_buff(new_wave_amplitude);                                                // update sine wave amplitude
+      ATOMIC_WRITE(i2c, idle);                                                                      // reset i2c flag
       break;
     default:
       break;
     }
-    next_state();
+    next_state(); // Move to the next system state
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -451,8 +454,7 @@ void SystemClock_Config(void)
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
@@ -519,7 +521,6 @@ static void MX_ADC3_Init(void)
   /* USER CODE BEGIN ADC3_Init 2 */
 
   /* USER CODE END ADC3_Init 2 */
-
 }
 
 /**
@@ -562,7 +563,6 @@ static void MX_DAC1_Init(void)
   /* USER CODE BEGIN DAC1_Init 2 */
 
   /* USER CODE END DAC1_Init 2 */
-
 }
 
 /**
@@ -610,7 +610,6 @@ static void MX_I2C3_Init(void)
   /* USER CODE BEGIN I2C3_Init 2 */
 
   /* USER CODE END I2C3_Init 2 */
-
 }
 
 /**
@@ -689,7 +688,6 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 2 */
   HAL_TIM_MspPostInit(&htim1);
-
 }
 
 /**
@@ -779,7 +777,6 @@ static void MX_TIM4_Init(void)
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
-
 }
 
 /**
@@ -814,7 +811,6 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
@@ -846,7 +842,6 @@ static void MX_DMA_Init(void)
   /* DMA2_Channel5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Channel5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Channel5_IRQn);
-
 }
 
 /**
