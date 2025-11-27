@@ -82,6 +82,7 @@ typedef struct pcf8591_config
 #define SIN_WAVE_SAMPLES 512
 #define SIN_WAVE_MAX_AMPLITUDE 4095 // 12-bit DAC max value
 #define DEBOUNCE_TIME_MS 50         // Debounce time in milliseconds
+#define DEBUG
 // Define the MAX7219 registers
 /* USER CODE END PD */
 
@@ -167,7 +168,7 @@ static void set_system_state(SystemState new_state);
 static void set_pwm_duty(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t duty_percent);
 void next_state();
 void switch_mode();
-void populate_sin_wave_buff(uint16_t wave_amplitude);
+void populate_sin_wave_buff(uint16_t wave_amplitude, uint8_t update);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
 HAL_StatusTypeDef PCF8591_set_channel_index(pcf8591_channel_t channel_index);
@@ -181,19 +182,19 @@ void next_state()
 {
   switch (get_system_state())
   {
-    case SYSTEM_STATE_1:
+  case SYSTEM_STATE_1:
     if (ATOMIC_READ(read))
     {
       uint8_t mod = ATOMIC_READ(mode);
       if (mod == 1 || mod == 3)
-      set_system_state(SYSTEM_STATE_2);
+        set_system_state(SYSTEM_STATE_2);
       else if (mod == 2)
-      set_system_state(SYSTEM_STATE_5);
+        set_system_state(SYSTEM_STATE_5);
       else
-      mod = 1;
+        mod = 1;
     }
     break;
-    case SYSTEM_STATE_4:
+  case SYSTEM_STATE_4:
     if (ATOMIC_READ(mode) == 1)
       set_system_state(SYSTEM_STATE_1);
     else if (ATOMIC_READ(mode) == 3)
@@ -228,19 +229,19 @@ void switch_mode()
   ATOMIC_WRITE(mode, (mode % 3) + 1);
   switch (ATOMIC_READ(mode))
   {
-    case 1:
-    default:
+  case 1:
+  default:
     /* TODO: Check HAL return values and handle errors appropriately */
     HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2);  // Stop DAC DMA
     HAL_DAC_Stop(&hdac1, DAC_CHANNEL_2);      // Stop DAC DMA
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
     break;
-    case 2:
+  case 2:
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4); // Stop PWM
     /* TODO: Verify HAL_DAC_Start_DMA return value before proceeding */
     HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)sin_wave_buff, SIN_WAVE_SAMPLES, DAC_ALIGN_12B_R);
     break;
-    case 3:
+  case 3:
     HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)sin_wave_buff, SIN_WAVE_SAMPLES, DAC_ALIGN_12B_R);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); // Start PWM
     break;
@@ -313,21 +314,47 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
 }
 
-void populate_sin_wave_buff(uint16_t wave_amplitude)
+void populate_sin_wave_buff(uint16_t wave_amplitude, uint8_t update)
 {
+  static uint16_t amplitude;
   if (wave_amplitude > SIN_WAVE_MAX_AMPLITUDE)
     wave_amplitude = SIN_WAVE_MAX_AMPLITUDE;
   else if (wave_amplitude == 0)
   {
+    /* if amplitude is zero, clear the buffer */
     memset(sin_wave_buff, 0, sizeof(sin_wave_buff));
+    amplitude = 0;
     return;
   }
 
-  for (size_t i = 0; i < SIN_WAVE_SAMPLES; ++i)
+  // if amplitude is very low, force full update to avoid precision loss
+  if (amplitude < SIN_WAVE_MAX_AMPLITUDE / 16)
+    update = 0;
+
+  __disable_irq(); // Disable interrupts to safely update the sine wave buffer
+  if (update)
   {
-    double v = (sin(2.0 * M_PI * i / SIN_WAVE_SAMPLES) + 1.0) / 2.0;
-      sin_wave_buff[i] = (uint16_t)(v * wave_amplitude); // saves on buffer
+    /*
+      Calibrate sine wave buffer based on new amplitude
+      using ratio of new amplitude to old amplitude.
+      This improves system efficiency and reduces computational load.
+    */
+    double ratio = (double)wave_amplitude / amplitude;
+    for (size_t i = 0; i < SIN_WAVE_SAMPLES; ++i)
+      sin_wave_buff[i] = (uint16_t)(sin_wave_buff[i] * ratio);
   }
+  else
+  {
+    // Fully recalculate sine wave buffer based on new amplitude
+    for (size_t i = 0; i < SIN_WAVE_SAMPLES; ++i)
+    {
+      // calc current sin sample
+      double v = (sin(2.0 * M_PI * i / SIN_WAVE_SAMPLES) + 1.0) / 2.0;
+      sin_wave_buff[i] = (uint16_t)(v * wave_amplitude); // saves on buffer
+    }
+  }
+  amplitude = wave_amplitude;
+  __enable_irq();
 }
 
 HAL_StatusTypeDef PCF8591_read_analog_channel()
@@ -349,9 +376,9 @@ HAL_StatusTypeDef PCF8591_set_channel_index(pcf8591_channel_t channel_index)
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
@@ -401,28 +428,33 @@ int main(void)
     switch (get_system_state())
     {
     case SYSTEM_STATE_1:
-        __WFI(); // Wait for interrupt to save power
-        
+      __WFI(); // Wait for interrupt to save power
+
       // Check if button was pressed (debounced)
       if (ATOMIC_READ(button_pressed))
       {
         ATOMIC_WRITE(button_pressed, 0); // reset button_pressed flag
         switch_mode();                   // switch to the next mode
       }
-        break;
+      break;
     case SYSTEM_STATE_2:
       ATOMIC_WRITE(read, 0);                         // reset read flag
       PCF8591_set_channel_index(PCF8591_CHANNEL_A3); // set channel to A3 (LDR)
       __WFI();                                       // Wait for interrupt to save power
-        break;
+      break;
     case SYSTEM_STATE_3:
       PCF8591_read_analog_channel(); // read analog value from selected channel
       __WFI();                       // Wait for interrupt to save power
-        break;
+      break;
     case SYSTEM_STATE_4:
       pcf8591_value &= 0x00FF;                            // Ensure we only use the lower 8 bits
       set_pwm_duty(&htim1, TIM_CHANNEL_4, pcf8591_value); // Update PWM duty cycle with LDR value
       ATOMIC_WRITE(i2c, idle);                            // reset i2c flag
+#ifdef DEBUG
+      char tx[50];
+      snprintf(tx, sizeof(tx), "[debug] pcf8591=%u\r\n", pcf8591_value);
+      HAL_UART_Transmit(&huart2, (uint8_t *)tx, strlen(tx), HAL_MAX_DELAY);
+#endif
       break;
     case SYSTEM_STATE_5:
       ATOMIC_WRITE(read, 0);                         // reset read flag
@@ -434,10 +466,15 @@ int main(void)
       __WFI();                       // Wait for interrupt to save power
       break;
     case SYSTEM_STATE_7:
-      pcf8591_value &= 0x00FF;                                                                      // Ensure we only use the lower 8 bits
+      pcf8591_value &= 0x00FF;                                                                                    // Ensure we only use the lower 8 bits
       uint16_t new_wave_amplitude = (uint16_t)((UINT8_MAX - pcf8591_value) * SIN_WAVE_MAX_AMPLITUDE / UINT8_MAX); // Calculate new wave amplitude based on potentiometer value
-      populate_sin_wave_buff(new_wave_amplitude);                                                // update sine wave amplitude
-      ATOMIC_WRITE(i2c, idle);                                                                      // reset i2c flag
+      populate_sin_wave_buff(new_wave_amplitude, 1); // update sine wave amplitude
+      ATOMIC_WRITE(i2c, idle);                       // reset i2c flag
+#ifdef DEBUG
+      char tx[50];
+      snprintf(tx, sizeof(tx), "[debug] pcf8591=%u amplitude=%u\r\n", pcf8591_value, new_wave_amplitude);
+      HAL_UART_Transmit(&huart2, (uint8_t *)tx, strlen(tx), HAL_MAX_DELAY);
+#endif
       break;
     default:
       break;
@@ -451,24 +488,24 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -485,7 +522,7 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
+   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
@@ -499,10 +536,10 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief ADC3 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief ADC3 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_ADC3_Init(void)
 {
 
@@ -517,7 +554,7 @@ static void MX_ADC3_Init(void)
   /* USER CODE END ADC3_Init 1 */
 
   /** Common config
-  */
+   */
   hadc3.Instance = ADC3;
   hadc3.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
   hadc3.Init.Resolution = ADC_RESOLUTION_12B;
@@ -539,7 +576,7 @@ static void MX_ADC3_Init(void)
   }
 
   /** Configure Regular Channel
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_15;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
@@ -556,10 +593,10 @@ static void MX_ADC3_Init(void)
 }
 
 /**
-  * @brief DAC1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief DAC1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_DAC1_Init(void)
 {
 
@@ -574,7 +611,7 @@ static void MX_DAC1_Init(void)
   /* USER CODE END DAC1_Init 1 */
 
   /** DAC Initialization
-  */
+   */
   hdac1.Instance = DAC1;
   if (HAL_DAC_Init(&hdac1) != HAL_OK)
   {
@@ -582,7 +619,7 @@ static void MX_DAC1_Init(void)
   }
 
   /** DAC channel OUT2 config
-  */
+   */
   sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
   sConfig.DAC_Trigger = DAC_TRIGGER_T4_TRGO;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
@@ -598,10 +635,10 @@ static void MX_DAC1_Init(void)
 }
 
 /**
-  * @brief I2C3 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C3 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_I2C3_Init(void)
 {
 
@@ -627,14 +664,14 @@ static void MX_I2C3_Init(void)
   }
 
   /** Configure Analogue filter
-  */
+   */
   if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Configure Digital filter
-  */
+   */
   if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
   {
     Error_Handler();
@@ -645,10 +682,10 @@ static void MX_I2C3_Init(void)
 }
 
 /**
-  * @brief TIM1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM1_Init(void)
 {
 
@@ -723,10 +760,10 @@ static void MX_TIM1_Init(void)
 }
 
 /**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM2_Init(void)
 {
 
@@ -811,10 +848,10 @@ static void MX_TIM3_Init(void)
 }
 
 /**
-  * @brief TIM4 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM4 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM4_Init(void)
 {
 
@@ -855,10 +892,10 @@ static void MX_TIM4_Init(void)
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -889,8 +926,8 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
-  * Enable DMA controller clock
-  */
+ * Enable DMA controller clock
+ */
 static void MX_DMA_Init(void)
 {
 
@@ -920,10 +957,10 @@ static void MX_DMA_Init(void)
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -977,9 +1014,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -992,12 +1029,12 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
