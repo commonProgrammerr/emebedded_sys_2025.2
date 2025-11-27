@@ -81,6 +81,7 @@ typedef struct pcf8591_config
 #define I2C_INTERFACE_INSTANCE I2C3
 #define SIN_WAVE_SAMPLES 512
 #define SIN_WAVE_MAX_AMPLITUDE 4095 // 12-bit DAC max value
+#define DEBOUNCE_TIME_MS 50         // Debounce time in milliseconds
 // Define the MAX7219 registers
 /* USER CODE END PD */
 
@@ -102,6 +103,7 @@ DMA_HandleTypeDef hdma_i2c3_tx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
@@ -132,7 +134,9 @@ volatile SystemState last_state = SYSTEM_STATE_1;
 volatile i2c_flag_t i2c = idle;
 volatile uint8_t mode = 1;
 volatile uint8_t read = 0;
-volatile uint8_t click = 0;
+volatile uint8_t button_pressed = 0;    // Set by interrupt when button press is confirmed
+volatile uint8_t debouncing = 0;        // Flag indicating debounce in progress
+volatile uint16_t debounce_counter = 0; // Counter for debounce timing
 
 static uint16_t sin_wave_buff[SIN_WAVE_SAMPLES];
 static pcf8591_config_t pcf8591_config = {
@@ -156,6 +160,7 @@ static void MX_DAC1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 static SystemState get_system_state(void);
 static void set_system_state(SystemState new_state);
@@ -275,13 +280,37 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   {
     read = 1;
   }
+  else if (htim->Instance == TIM3)
+  {
+    // Timer3 is used for debouncing - increments every 1ms
+    debounce_counter++;
+
+    if (debounce_counter >= DEBOUNCE_TIME_MS)
+    {
+      // Debounce period complete - check button state
+      if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET)
+      {
+        // Button is still pressed after debounce period - valid press
+        button_pressed = 1;
+      }
+
+      // Stop timer and reset debounce state
+      HAL_TIM_Base_Stop_IT(&htim3);
+      debouncing = 0;
+      debounce_counter = 0;
+    }
+  }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == B1_Pin && !click)
-    click=1;
-  
+  if (GPIO_Pin == B1_Pin && !debouncing)
+  {
+    // Start debounce timer on falling edge (button press)
+    debouncing = 1;
+    debounce_counter = 0;
+    HAL_TIM_Base_Start_IT(&htim3);
+  }
 }
 
 void populate_sin_wave_buff(uint16_t wave_amplitude)
@@ -356,6 +385,7 @@ int main(void)
   MX_TIM1_Init();
   MX_ADC3_Init();
   MX_TIM4_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   set_system_state(SYSTEM_STATE_1);
   HAL_TIM_Base_Start_IT(&htim2);                     // Start timer for periodic tasks
@@ -371,12 +401,14 @@ int main(void)
     switch (get_system_state())
     {
     case SYSTEM_STATE_1:
-        ATOMIC_WRITE(click, 0);
         __WFI(); // Wait for interrupt to save power
         
-        if(ATOMIC_READ(click))
-          switch_mode();
-        ATOMIC_WRITE(click, 0);
+      // Check if button was pressed (debounced)
+      if (ATOMIC_READ(button_pressed))
+      {
+        ATOMIC_WRITE(button_pressed, 0); // reset button_pressed flag
+        switch_mode();                   // switch to the next mode
+      }
         break;
     case SYSTEM_STATE_2:
       ATOMIC_WRITE(read, 0);                         // reset read flag
@@ -633,9 +665,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
+  htim1.Init.Prescaler = 79;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 255;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -660,7 +692,7 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
+  sConfigOC.Pulse = 255;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
@@ -711,7 +743,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 7999;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 500;
+  htim2.Init.Period = 10000;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -732,7 +764,50 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+}
 
+/**
+ * @brief TIM3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 7999; // 80MHz / 8000 = 10kHz
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 9; // 10kHz / 10 = 1kHz (1ms period)
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
 }
 
 /**
