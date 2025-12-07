@@ -6,116 +6,87 @@
 
 static const char *TAG = "BTN_INTERFACE";
 
-// Variáveis de Estado
 static sys_state_t current_state = STATE_NORMAL;
-static int64_t last_interaction_time = 0; // Para o timeout de 30s
+static int64_t last_interaction_time = 0; 
 
-// Constantes de Tempo (em microsegundos)
 #define TIMEOUT_INACTIVITY_US  30000000 // 30 segundos
 #define LONG_PRESS_TIME_US      2000000 // 2 segundos
 
-// Inicialização dos GPIOs
 void buttons_init(void) {
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL<<BTN_UP_PIN) | (1ULL<<BTN_DOWN_PIN) | (1ULL<<BTN_SELECT_PIN);
+    // Máscara de bits apenas para o botão único
+    io_conf.pin_bit_mask = (1ULL<<BUTTON_PIN);
     io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 1; // PULL-UP ATIVADO (Pressionado = 0)
+    io_conf.pull_up_en = 1; // Pull-up ligado
     gpio_config(&io_conf);
     
     last_interaction_time = esp_timer_get_time();
-    ESP_LOGI(TAG, "Interface de Botoes Inicializada");
+    ESP_LOGI(TAG, "Botao Unico Inicializado no pino %d", BUTTON_PIN);
 }
 
 sys_state_t get_current_state(void) {
     return current_state;
 }
 
-// Lógica de processamento de um botão específico
-// Retorna: 0=Nada, 1=Click Curto, 2=Long Press
+// Função genérica de checagem (mantida igual, útil para callbacks futuros)
 int check_button(int pin) {
-    if (gpio_get_level(pin) == 0) { // Botão pressionado (Low)
-        vTaskDelay(pdMS_TO_TICKS(50)); // DEBOUNCE 50ms (Requisito da Task)
+    if (gpio_get_level(pin) == 0) { 
+        vTaskDelay(pdMS_TO_TICKS(50)); // Debounce
         
-        if (gpio_get_level(pin) == 0) { // Ainda pressionado?
+        if (gpio_get_level(pin) == 0) {
             int64_t press_start = esp_timer_get_time();
             bool long_press_detected = false;
 
-            // Espera soltar ou dar o tempo de long press
             while (gpio_get_level(pin) == 0) {
                 vTaskDelay(pdMS_TO_TICKS(10));
-                
-                // Checa Long Press (2 segundos)
                 if (!long_press_detected && (esp_timer_get_time() - press_start > LONG_PRESS_TIME_US)) {
                     long_press_detected = true;
-                    ESP_LOGI(TAG, "Evento: Long Press Detectado!");
-                    return 2; // Código para Long Press
+                    ESP_LOGI(TAG, "Long Press Detectado!");
+                    return 2; 
                 }
             }
-            // Se soltou antes de 2s, é click curto
-            if (!long_press_detected) {
-                return 1; // Código para Click Curto
-            }
+            if (!long_press_detected) return 1; 
         }
     }
-    return 0; // Nada aconteceu
+    return 0;
 }
 
 void buttons_process(void) {
     int64_t now = esp_timer_get_time();
 
-    // 1. Verificar Timeout (30s sem atividade volta ao Normal)
+    // 1. Verificar Timeout
     if (current_state != STATE_NORMAL && (now - last_interaction_time > TIMEOUT_INACTIVITY_US)) {
-        ESP_LOGW(TAG, "Timeout de Inatividade! Retornando ao estado NORMAL.");
+        ESP_LOGW(TAG, "Timeout! Voltando ao normal.");
         current_state = STATE_NORMAL;
-        last_interaction_time = now; // Reset timer
+        last_interaction_time = now;
     }
 
-    // 2. Processar Botão SELECT (Navegação)
-    int event_select = check_button(BTN_SELECT_PIN);
-    if (event_select > 0) { // Se houve click ou long press
-        last_interaction_time = esp_timer_get_time(); // Reseta timeout
+    // 2. Processar Botão Único
+    int event = check_button(BUTTON_PIN);
+    
+    if (event > 0) {
+        last_interaction_time = esp_timer_get_time();
         
-        if (event_select == 1) { // Click Curto: Avança estado
+        if (event == 1) { // Click Curto: Cicla entre os estados
             switch (current_state) {
                 case STATE_NORMAL:
                     current_state = STATE_CONFIG_TEMP;
-                    ESP_LOGI(TAG, "Mudou para: CONFIG TEMP");
+                    ESP_LOGI(TAG, "Estado: CONFIG TEMP");
                     break;
                 case STATE_CONFIG_TEMP:
                     current_state = STATE_CONFIG_HUMIDITY;
-                    ESP_LOGI(TAG, "Mudou para: CONFIG UMIDADE");
+                    ESP_LOGI(TAG, "Estado: CONFIG UMIDADE");
                     break;
                 case STATE_CONFIG_HUMIDITY:
                     current_state = STATE_NORMAL;
-                    ESP_LOGI(TAG, "Mudou para: NORMAL");
+                    ESP_LOGI(TAG, "Estado: NORMAL");
                     break;
             }
-        } else if (event_select == 2) {
-            // Se a task pedir algo específico para long press no select, coloque aqui
-            ESP_LOGI(TAG, "Long Press no Select (Sem ação definida)");
-        }
-    }
-
-    // 3. Processar Botão UP (Ajuste +1)
-    if (check_button(BTN_UP_PIN) == 1) {
-        last_interaction_time = esp_timer_get_time();
-        if (current_state == STATE_CONFIG_TEMP) {
-            ESP_LOGI(TAG, "Aumentar Temp (+1)");
-            // Aqui você chamaria uma função para mudar a variável real de temperatura
-        } else if (current_state == STATE_CONFIG_HUMIDITY) {
-            ESP_LOGI(TAG, "Aumentar Umidade (+1)");
-        }
-    }
-
-    // 4. Processar Botão DOWN (Ajuste -1)
-    if (check_button(BTN_DOWN_PIN) == 1) {
-        last_interaction_time = esp_timer_get_time();
-        if (current_state == STATE_CONFIG_TEMP) {
-            ESP_LOGI(TAG, "Diminuir Temp (-1)");
-        } else if (current_state == STATE_CONFIG_HUMIDITY) {
-            ESP_LOGI(TAG, "Diminuir Umidade (-1)");
+        } else if (event == 2) {
+            // Espaço reservado para Callback de Long Press futuro
+            ESP_LOGI(TAG, "Acao de Long Press (Futura)");
         }
     }
 }
