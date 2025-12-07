@@ -109,19 +109,3 @@ void vTaskAlerts(void *pvParameters) {
     }
 }
 
-void app_main() {
-    init_gpio();
-    init_buzzer();
-
-    ESP_LOGI(TAG, "Boot Test...");
-  
-    gpio_set_level(PIN_LED_GREEN, 1); vTaskDelay(pdMS_TO_TICKS(300));
-    gpio_set_level(PIN_LED_YELLOW, 1); vTaskDelay(pdMS_TO_TICKS(300));
-    gpio_set_level(PIN_LED_RED, 1); vTaskDelay(pdMS_TO_TICKS(300));
-    gpio_set_level(PIN_LED_GREEN, 0); 
-    gpio_set_level(PIN_LED_YELLOW, 0); 
-    gpio_set_level(PIN_LED_RED, 0);
-
-    xTaskCreate(vTaskSensorLogic, "SensorLogic", 4096, NULL, 5, NULL);
-    xTaskCreate(vTaskAlerts, "Alerts", 2048, NULL, 5, NULL);
-}
