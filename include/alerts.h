@@ -1,5 +1,5 @@
-#ifndef BIOTERIO_SYSTEM_H
-#define BIOTERIO_SYSTEM_H
+#ifndef ALERTS_SYSTEM_H 
+#define ALERTS_SYSTEM_H
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
