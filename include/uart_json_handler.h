@@ -3,6 +3,32 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include "esp_log.h"
+#include "driver/uart.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+// Configurações UART
+#define UART_PORT UART_NUM_0
+#define UART_BAUDRATE 115200
+#define UART_TX_PIN 1
+#define UART_RX_PIN 3
+#define UART_DATA_BITS UART_DATA_8_BITS
+#define UART_STOP_BITS UART_STOP_BITS_1
+#define UART_PARITY UART_PARITY_DISABLE
+
+// Buffer Circular TX
+#define TX_BUFFER_SIZE 512
+
+typedef struct {
+    uint8_t buffer[TX_BUFFER_SIZE];
+    uint16_t write_idx;
+    uint16_t read_idx;
+    uint16_t count;
+    SemaphoreHandle_t mutex;
+} circular_buffer_t;
 
 /**
  * @brief Estrutura para um registro de leitura de sensores
