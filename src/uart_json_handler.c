@@ -1,32 +1,11 @@
 #include "uart_json_handler.h"
-#include "esp_log.h"
-#include "driver/uart.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
-#include "cJSON.h"
-#include <string.h>
-#include <stdio.h>
+
+/*
+ * Note: other platform includes, defines and typedefs were moved to the header
+ * to centralize configuration and meet project guidelines.
+ */
 
 static const char *TAG = "UART_JSON";
-
-// Configurações UART
-#define UART_PORT UART_NUM_0
-#define UART_BAUDRATE 115200
-#define UART_TX_PIN 1
-#define UART_RX_PIN 3
-#define UART_DATA_BITS UART_DATA_8_BITS
-#define UART_STOP_BITS UART_STOP_BITS_1
-#define UART_PARITY UART_PARITY_DISABLE
-
-// Buffer Circular TX
-#define TX_BUFFER_SIZE 512
-typedef struct {
-    uint8_t buffer[TX_BUFFER_SIZE];
-    uint16_t write_idx;
-    uint16_t read_idx;
-    uint16_t count;
-    SemaphoreHandle_t mutex;
-} circular_buffer_t;
 
 static circular_buffer_t tx_buffer = {0};
 static SemaphoreHandle_t uart_mutex = NULL;
@@ -199,45 +178,50 @@ static uart_json_status_t uart_json_transmit(const uint8_t* data, uint32_t len) 
 }
 
 /**
+ * @brief Escreve diretamente na UART segurando o mutex (bypass do buffer circular)
+ */
+static uart_json_status_t uart_json_write_direct(const uint8_t* data, uint32_t len) {
+    if (data == NULL || len == 0) return UART_JSON_INVALID_INPUT;
+    if (uart_mutex == NULL) return UART_JSON_ERROR;
+
+    // Bloqueia até conseguir o mutex para garantir sequência
+    if (xSemaphoreTake(uart_mutex, portMAX_DELAY) != pdTRUE) {
+        return UART_JSON_TX_BUSY;
+    }
+
+    int written = uart_write_bytes(UART_PORT, (const char*)data, len);
+    xSemaphoreGive(uart_mutex);
+
+    if (written < 0) return UART_JSON_ERROR;
+    return UART_JSON_OK;
+}
+
+/**
  * @brief Converte um record para JSON e envia via UART
  */
 uart_json_status_t uart_json_send_record(const read_record_t* record) {
     if (record == NULL) {
         return UART_JSON_INVALID_INPUT;
     }
-    
-    // Cria objeto JSON
-    cJSON *json_record = cJSON_CreateObject();
-    if (json_record == NULL) {
-        ESP_LOGE(TAG, "Falha ao criar objeto JSON");
+    char json_buf[128];
+    int len = snprintf(json_buf, sizeof(json_buf),
+                       "{\"time\":%u,\"temp\":%.2f,\"humi\":%.2f,\"light\":%u,\"noise\":%u}",
+                       (unsigned)record->id,
+                       (double)record->temperature,
+                       (double)record->humidity,
+                       (unsigned)record->light,
+                       (unsigned)record->noise);
+
+    if (len <= 0) {
+        ESP_LOGE(TAG, "Erro ao formatar JSON");
         return UART_JSON_ERROR;
     }
-    
-    // Adiciona campos ao JSON
-    cJSON_AddNumberToObject(json_record, "time", record->id);
-    cJSON_AddNumberToObject(json_record, "temp", record->temperature);
-    cJSON_AddNumberToObject(json_record, "humi", record->humidity);
-    cJSON_AddNumberToObject(json_record, "light", record->light);
-    cJSON_AddNumberToObject(json_record, "noise", record->noise);
-    
-    // Converte para string JSON
-    char *json_string = cJSON_Print(json_record);
-    cJSON_Delete(json_record);
-    
-    if (json_string == NULL) {
-        ESP_LOGE(TAG, "Falha ao converter JSON para string");
-        return UART_JSON_ERROR;
-    }
-    
-    // Envia via UART
-    uart_json_status_t status = uart_json_transmit((uint8_t*)json_string, strlen(json_string));
-    
-    // Adiciona newline
+
+    uart_json_status_t status = uart_json_transmit((uint8_t*)json_buf, (uint32_t)len);
     if (status == UART_JSON_OK) {
         uart_json_transmit((uint8_t*)"\n", 1);
     }
-    
-    free(json_string);
+
     return status;
 }
 
@@ -248,53 +232,44 @@ uart_json_status_t uart_json_send_history(const read_record_t* history, uint16_t
     if (history == NULL || count == 0) {
         return UART_JSON_INVALID_INPUT;
     }
-    
-    // Cria array JSON
-    cJSON *json_array = cJSON_CreateArray();
-    if (json_array == NULL) {
-        ESP_LOGE(TAG, "Falha ao criar array JSON");
-        return UART_JSON_ERROR;
-    }
-    
-    // Adiciona cada record ao array
+
+    /* Stream the JSON array using direct UART writes to avoid filling the
+       circular buffer when sending large histories. This blocks on the
+       UART mutex so the caller will wait until all bytes are written. */
+    uart_json_status_t status;
+    status = uart_json_write_direct((const uint8_t*)"[", 1);
+    if (status != UART_JSON_OK) return status;
+
+    char json_buf[128];
     for (uint16_t i = 0; i < count; i++) {
-        cJSON *json_record = cJSON_CreateObject();
-        if (json_record == NULL) {
-            ESP_LOGE(TAG, "Falha ao criar objeto JSON para record %d", i);
-            cJSON_Delete(json_array);
+        if (i > 0) {
+            status = uart_json_write_direct((const uint8_t*)",", 1);
+            if (status != UART_JSON_OK) return status;
+        }
+
+        int len = snprintf(json_buf, sizeof(json_buf),
+                           "{\"time\":%u,\"temp\":%.2f,\"humi\":%.2f,\"light\":%u,\"noise\":%u}",
+                           (unsigned)history[i].id,
+                           (double)history[i].temperature,
+                           (double)history[i].humidity,
+                           (unsigned)history[i].light,
+                           (unsigned)history[i].noise);
+
+        if (len <= 0) {
+            ESP_LOGE(TAG, "Erro ao formatar JSON para record %u", (unsigned)i);
             return UART_JSON_ERROR;
         }
-        
-        // Adiciona campos
-        cJSON_AddNumberToObject(json_record, "time", history[i].id);
-        cJSON_AddNumberToObject(json_record, "temp", history[i].temperature);
-        cJSON_AddNumberToObject(json_record, "humi", history[i].humidity);
-        cJSON_AddNumberToObject(json_record, "light", history[i].light);
-        cJSON_AddNumberToObject(json_record, "noise", history[i].noise);
-        
-        cJSON_AddItemToArray(json_array, json_record);
+
+        status = uart_json_write_direct((const uint8_t*)json_buf, (uint32_t)len);
+        if (status != UART_JSON_OK) return status;
     }
-    
-    // Converte para string JSON
-    char *json_string = cJSON_Print(json_array);
-    cJSON_Delete(json_array);
-    
-    if (json_string == NULL) {
-        ESP_LOGE(TAG, "Falha ao converter JSON para string");
-        return UART_JSON_ERROR;
-    }
-    
-    // Envia via UART
-    uart_json_status_t status = uart_json_transmit((uint8_t*)json_string, strlen(json_string));
-    
-    // Adiciona newline
+
+    status = uart_json_write_direct((const uint8_t*)"]", 1);
     if (status == UART_JSON_OK) {
-        uart_json_transmit((uint8_t*)"\n", 1);
+        uart_json_write_direct((const uint8_t*)"\n", 1);
     }
-    
+
     ESP_LOGI(TAG, "Histórico de %d registros enviado", count);
-    
-    free(json_string);
     return status;
 }
 
