@@ -9,22 +9,8 @@
 
 A máquina de estados gerencia os 4 estados principais do sistema:
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│                    MÁQUINA DE ESTADOS                         │
-│                                                               │
-│  INIT ──[INIT_COMPLETE]──> NORMAL ──[SENSOR_OUT_OF_RANGE]──> ALERT
-│   │         │                │ ▲          │                  │ │
-│   │         └──[INIT_FAILED]─┘ │          │                  │ │
-│   │                            │          │                  │ │
-│   └────────[SYSTEM_ERROR]──────┴──[RECOVERY]──────────────────┘
-│            [SENSOR_FAILURE]
-│                            [SENSOR_NORMAL]
-│
-│  EVENT_RESET: Qualquer estado retorna para INIT
-│
-└───────────────────────────────────────────────────────────────┘
-```
+![Diagrama de Estados Principal](images/main_state_machine.svg)
+
 
 ## Estados
 
