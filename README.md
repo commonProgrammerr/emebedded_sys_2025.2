@@ -1,133 +1,142 @@
-# Sistema Embarcado - Projeto DAC/PWM com PCF8591
+# Sistema de Monitoramento Ambiental para Biotério
 
-Este projeto implementa um sistema embarcado utilizando o microcontrolador STM32L476RG, integrando comunicação I2C com o módulo ADC/DAC PCF8591 e geração de sinais analógicos através de DAC e PWM. O sistema permite ler valores analógicos, controlar amplitudes de onda senoidal, e ajustar ciclos de trabalho PWM baseados em sensores, com alternância de modos através de botão físico.
+## Visão Geral
 
-## Funcionalidades
+Sistema embarcado completo para monitoramento contínuo de condições ambientais em salas/racks de criação de ratos, focando em temperatura, umidade, iluminação e ruído. O sistema visa manter conformidade com as faixas-alvo recomendadas para favorecer a reprodução e bem-estar animal.
 
-### Comunicação e Protocolos
-- **Interface I2C**: Comunicação com módulo PCF8591 ADC/DAC usando DMA
-- **Interface UART**: Debug log via USART2 (não implementado por padrão)
+**Plataforma:** ESP32 (Feather ESP32-S2 ou WROOM)  
+**Linguagem:** C/C++ com FreeRTOS  
+**Comunicação:** UART JSON para logging e integração com sistemas externos
 
-### Processamento de Sinais
-- **Leitura de Canais Analógicos**: 2 canais ADC do PCF8591 (A0, A1, 8-bit, 0-255)
-- **Saída DAC**: Geração de onda senoidal com amplitude variável (12-bit, 0-4095)
-- **Saída PWM**: Controle de duty cycle baseado em sensor (TIM1 CH4)
-- **Controle de Amplitude**: Valor do sensor A1 controla amplitude da onda DAC
-- **Controle PWM**: Valor do sensor A0 controla duty cycle do PWM
+---
 
-### Alternância de Modos
-- **Modo 1**: PWM controlado por sensor A0 (padrão)
-- **Modo 2**: DAC com onda senoidal de amplitude controlada por A1
-- **Modo 3**: Ambos PWM e DAC ativos simultaneamente
-- **Botão B1**: Alterna entre os 3 modos de operação
-- **Operação Periódica**: Timer TIM2 dispara leituras automáticas dos sensores
+## Parâmetros-Alvo
 
-## Controle e Operação
+| Parâmetro | Faixa/Meta | Observações |
+|-----------|-----------|-------------|
+| **Temperatura** | 22–26 °C | Evitar variações rápidas; estabilidade > precisão |
+| **Umidade Relativa** | 40–60 % | Oscilações grandes causam estresse |
+| **Iluminação** (claro) | 150–300 lux | ~0 lux durante período escuro; evitar vazamento |
+| **Ruído contínuo** | < 70 dB(A) | Minimizar picos (portas, carrinhos, compressores) |
 
-### Alternância de Modos (Botão B1)
-O sistema opera em 3 modos alternáveis através do botão B1:
+**Critério de Conformidade:** ≥ 85% das leituras de 24 h devem estar dentro das faixas definidas.
 
-#### **Modo 1: PWM Controlado por Sensor** (Padrão)
-- PWM ativo no pino TIM1_CH4 (PA11)
-- Duty cycle controlado pelo valor do sensor A0 (0-255 → 0-100%)
-- DAC desabilitado
-- Leitura periódica automática via TIM2
+---
 
-#### **Modo 2: DAC com Onda Senoidal**
-- DAC ativo no pino PA5 gerando onda senoidal
-- Amplitude controlada pelo valor do sensor A1 (0-255 → 0-4095)
-- PWM desabilitado
-- 512 amostras por período de onda
-- Trigger via TIM4 para DAC DMA
+## Hardware – Kit MVP
 
-#### **Modo 3: PWM + DAC Simultâneos**
-- PWM ativo (controlado por A0)
-- DAC ativo (amplitude controlada por A1)
-- Ambas as saídas operando simultaneamente
+### Sensores
 
-### Operação Automática
-- **Timer TIM2**: Dispara leituras periódicas dos sensores quando em STATE_1
-- **DMA I2C**: Leituras e configurações assíncronas do PCF8591
-- **DMA DAC**: Geração contínua de onda senoidal no modo 2
-- **Proteção Atômica**: Variáveis compartilhadas protegidas com `ATOMIC_READ/WRITE`
+#### 1. Temperatura & Umidade – **DHT11**
+- **Amostragem:** 10 s; média móvel de 1 min
+- **Alerta:** T fora de 22–26 °C ou UR fora de 40–60 % por ≥ 3 leituras consecutivas
+- **Arquivo:** `src/dht11_sensor.c` / `include/dht11_sensor.h`
 
-## Arquitetura do Sistema
+#### 2. Iluminância – **BH1750**
+- **Amostragem:** 10 s; medição ao nível da gaiola
+- **Alerta (período claro):** < 150 ou > 300 lux
+- **Alerta (período escuro):** > 3 lux por > 2 min (vazamento de luz)
+- **Arquivo:** `src/BH1750FVI_sensor.c` / `include/BH1750FVI_sensor.h`
 
-O sistema implementa uma **máquina de estados com 8 estados** para gerenciar a comunicação entre múltiplos periféricos e protocolos de forma eficiente e robusta.
+#### 3. Ruído – **KY-037** (sensor de som relativo)
+- **Amostragem:** 10 s; cálculo RMS em janelas de 1 s
+- **Métrica:** Score 0–100 (não calibrado em dB)
+- **Alerta:** Picos > 60 por > 3 s ou média > 40 por > 5 min
+- **Arquivo:** `src/KY-037_sensor.c` / `include/KY-037_sensor.h`
 
-### Diagrama Geral do Sistema
-![Diagrama de Estados do Sistema](docs/images/diagrama_de_estados.svg)
+#### 4. Vibração (Opcional)
+- **Sensor base:** `include/sensor_base.h` (interface genérica)
+- Extensível para acelerómetros ou sensores de vibração
 
+### Atuadores
 
-### Máquina de Estados (7 Estados):
+#### LED + Buzzer
+- **LED Amarelo:** Estado "Atenção" (1 variável fora de faixa por 1–5 min)
+- **LED Vermelho:** Estado "Alarme" (crítico fora por > 5 min ou múltiplas fora)
+- **Buzzer:** Toque repetido a cada 30 s em alarme; opção de silenciar por até 10 min
+- **Arquivo:** `src/alerts.c` / `include/alerts.h`
 
-1. **STATE_1 (Idle)**: Estado inicial, aguarda eventos de timer ou botão
-2. **STATE_2 (Config ADC A0)**: Configura canal A0 do PCF8591 via I2C DMA
-3. **STATE_3 (Read ADC A0)**: Lê sensor A0 para controle PWM
-4. **STATE_4 (Update PWM)**: Atualiza duty cycle do PWM baseado em A0
-5. **STATE_5 (Config ADC A1)**: Configura canal A1 do PCF8591 via I2C DMA
-6. **STATE_6 (Read ADC A1)**: Lê sensor A1 para controle de amplitude DAC
-7. **STATE_7 (Update DAC)**: Recalcula e atualiza buffer de onda senoidal
+#### Display OLED 0,96" (I2C) – *Opcional/Futuro*
+- Tela 1: T/UR + estado (OK/Atenção/Alarme)
+- Tela 2: Iluminação (lux) + ruído (score)
+- Alternância automática a cada 5 s ou por botão
 
-### Arquitetura Simplificada:
+---
 
-O sistema foi refatorado para uma arquitetura simplificada e integrada:
+## Arquitetura de Software
 
-#### **PCF8591 I2C (inline em main.c)**
-- Comunicação I2C direta com HAL usando DMA
-- Estrutura `pcf8591_config_t` com bitfields para controle do chip
-- Funções: `PCF8591_set_channel_index()`, `PCF8591_read_analog_channel()`
-- Callbacks: `HAL_I2C_MasterTxCpltCallback()`, `HAL_I2C_MasterRxCpltCallback()`
-- Suporte para configuração de canais single-ended e differential
+### Módulos Principais
 
-#### **Geração de Onda Senoidal**
-- Buffer estático `sin_wave_buff[512]` com amostras da onda
-- Função `populate_sin_wave_buff(amplitude)` calcula valores usando `sin()` de `math.h`
-- DAC DMA transfere buffer continuamente
-- TIM4 dispara conversões DAC (TRGO)
-
-#### **Controle PWM**
-- TIM1 Channel 4 gera sinal PWM
-- Período: 65535 (16-bit)
-- Função `set_pwm_duty(htim, channel, duty)` atualiza compare value
-- Duty cycle proporcional ao valor do sensor (0-255 → 0-100%)
-
-#### **Proteção de Concorrência**
-- Macros `ATOMIC_READ(var)` e `ATOMIC_WRITE(var, value)`
-- Desabilitam interrupções durante acesso a variáveis compartilhadas
-- Protegem `system_state`, `i2c`, `mode`, `read` de race conditions
-- Essencial para sincronização entre ISR e main loop
-
-### Fluxos de Operação:
-
-#### Modo 1 (PWM Controlado):
 ```
-TIM2 Interrupt → STATE_1 (set read flag)
-→ STATE_2 (config A0) → STATE_3 (read A0) 
-→ STATE_4 (update PWM) → STATE_1 (idle)
+src/
+├── main.c                    # Ponto de entrada; inicializa sensores e UART
+├── uart_json_handler.c       # Comunicação UART + formatação JSON
+├── alerts.c                  # Lógica de LED/Buzzer e estados
+├── dht11_sensor.c            # Driver DHT11
+├── BH1750FVI_sensor.c        # Driver BH1750
+├── KY-037_sensor.c           # Driver KY-037 (ruído)
+└── sensor_base.c             # Interface base para sensores
+
+include/
+├── uart_json_handler.h       # Configuração UART (115200, 8N1)
+├── alerts.h
+├── dht11_sensor.h
+├── BH1750FVI_sensor.h
+├── KY-037_sensor.h
+└── sensor_base.h             # Estruturas comuns (read_record_t)
 ```
 
-#### Modo 2 (DAC Controlado):
+### Fluxo de Dados
+
 ```
-TIM2 Interrupt → STATE_1 (set read flag)
-→ STATE_5 (config A1) → STATE_6 (read A1)
-→ STATE_7 (update amplitude) → STATE_1 (idle)
-(DAC DMA runs continuously triggered by TIM4)
+┌──────────────────────────────────────────┐
+│         Sensores (RTOS Tasks)            │
+│  ├─ DHT11_task (10 s)                    │
+│  ├─ BH1750_task (10 s)                   │
+│  └─ KY037_task (10 s)                    │
+└────────────┬─────────────────────────────┘
+             │
+             ▼
+┌──────────────────────────────────────────┐
+│  Monitor/Decision Task                   │
+│  ├─ Aplicar média móvel (1 min)          │
+│  ├─ Checar histerese (3 leituras)        │
+│  └─ Atualizar estado (OK/Atenção/Alarme) │
+└────────────┬─────────────────────────────┘
+             │
+         ┌───┴────┬──────────────┐
+         ▼        ▼              ▼
+    ┌────────┐ ┌──────┐     ┌──────────┐
+    │ Alerts │ │ UART │     │ Display* │
+    │(LED/BZ)│ │(JSON)│     │ (OLED)*  │
+    └────────┘ └──────┘     └──────────┘
 ```
 
-#### Modo 3 (PWM + DAC):
-```
-TIM2 Interrupt → STATE_1 (set read flag)
-→ STATE_2 (config A0) → STATE_3 (read A0) → STATE_4 (update PWM)
-→ STATE_5 (config A1) → STATE_6 (read A1) → STATE_7 (update amplitude)
-→ STATE_1 (idle)
-```
+### Estados do Sistema
 
-#### Alternância de Modos (Button B1):
 ```
-Button Press (EXTI) → HAL_GPIO_EXTI_Callback()
-→ Increment mode (1→2→3→1)
-→ Start/Stop DAC DMA or PWM accordingly
+┌─────┐
+│  OK │  Todas as variáveis dentro das faixas
+└─┬───┘  → LED verde (opcional), buzzer silencioso
+  │
+  ├─────────────────────┐
+  │                     │
+  ▼                     ▼
+┌──────────┐      ┌────────────┐
+│Atenção   │      │  Alarme    │
+│ 1–5 min  │      │  > 5 min   │
+│ fora     │      │ ou crítico │ │
+│LED Amare-│      │LED Vermelho│
+│ lo       │      │Buzzer a    │
+└────┬─────┘      │cada 30 s   │
+     │            └────┬───────┘
+     │                 │
+     └─────┬───────────┘
+           │ (3 leituras OK)
+           ▼
+        ┌─────┐
+        │  OK │
+        └─────┘
 ```
 
 ## Configuração de Hardware
