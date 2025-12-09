@@ -1,4 +1,5 @@
 #include "sensor_monitor.h"
+#include "esp_task_wdt.h"
 
 sensor_monitor_t *sensors[MAX_SENSORS];
 uint8_t sensor_count = 0;
@@ -37,6 +38,11 @@ static void sensor_read_task(void *args)
 
         // Aloca memória temporária para os dados do sensor
         void *data = malloc(monitor->data_size);
+        if (!data) {
+            ESP_LOGE(SENSOR_MONITOR_TAG, "Failed to allocate memory for sensor data");
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Evita loop infinito
+            continue;
+        }
 
         // Executa a leitura do sensor usando a interface sensor_base
         SensorStatus_t status = monitor->sensor->read_data(monitor->sensor, data);
@@ -48,7 +54,10 @@ static void sensor_read_task(void *args)
             // Se callback foi fornecido, executa com os dados lidos
             if (monitor->data_callback != NULL)
             {
+                // Protege contra callbacks que podem travar
+                ESP_LOGD(SENSOR_MONITOR_TAG, "Calling callback for %s", monitor->sensor_name);
                 (monitor->data_callback)(monitor->sensor, data);
+                ESP_LOGD(SENSOR_MONITOR_TAG, "Callback finished for %s", monitor->sensor_name);
             }
         }
         else
@@ -58,6 +67,9 @@ static void sensor_read_task(void *args)
 
         // Libera memória temporária
         free(data);
+        
+        // Feed watchdog para evitar reset
+        vTaskDelay(pdMS_TO_TICKS(10)); // Pequeno delay para yield
     }
 }
 
@@ -159,7 +171,7 @@ static void init_sensor_task(sensor_monitor_t *sensor)
     BaseType_t result = xTaskCreate(
         sensor_read_task,     // Função da task
         sensor->sensor_name,  // Nome da task (aparece no debugger)
-        2048,                 // Tamanho da stack em bytes
+        4096,                 // Tamanho da stack em bytes (aumentado para callbacks com NVS)
         (void *)sensor,       // Parâmetro passado para a task
         tskIDLE_PRIORITY + 1, // Prioridade (baixa, mas acima de idle)
         &sensor->task_handle  // Handle retornado da task criada
