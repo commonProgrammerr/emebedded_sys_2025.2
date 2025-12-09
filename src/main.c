@@ -52,7 +52,7 @@ void app_main(void)
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
     bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
-    dht11_init(&dht11, DHT11_PIN, 1000);
+    dht11_init(&dht11, DHT11_PIN, 5000);  // Aumentar timeout para 5000ms
     KY037_init(&ky_037, MIC_ADC_CHANEL);
 
     sensor_monitor_t *th_monitor = new_sensor_monitor(
@@ -82,14 +82,24 @@ void app_main(void)
     
     ESP_LOGI("main", "Sistema iniciado. Monitorando sensores...");
     
-
+    // Cria e inicia o timer de média móvel
     TimerHandle_t av_timer = xTimerCreate(
         "av_calculation_timer",
-        pdMS_TO_TICKS(60000),
-        pdTRUE,                       
-        NULL,               
+        pdMS_TO_TICKS(60000),  // 60 segundos
+        pdTRUE,                // Auto-reload (repetir)
+        NULL,                  // Timer ID
         av_cal_monitor_timer_callback
     );
+
+    if (av_timer != NULL) {
+        if (xTimerStart(av_timer, 0) == pdPASS) {
+            ESP_LOGI("main", "Timer de média móvel iniciado (60s)");
+        } else {
+            ESP_LOGE("main", "Falha ao iniciar timer");
+        }
+    } else {
+        ESP_LOGE("main", "Falha ao criar timer");
+    }
 
     for (;;)
         vTaskDelay(portMAX_DELAY);
