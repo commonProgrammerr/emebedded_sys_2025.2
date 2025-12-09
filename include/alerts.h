@@ -1,57 +1,41 @@
 #ifndef ALERTS_H
 #define ALERTS_H
 
-#include <stdbool.h>
-#include "driver/gpio.h"
-#include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include <stdbool.h>
+#include <esp32-dht11.h> // Para o tipo dht11_t
 
-// Configurações de Pinos
-#define PIN_LED_GREEN   GPIO_NUM_16
-#define PIN_LED_YELLOW  GPIO_NUM_17
-#define PIN_LED_RED     GPIO_NUM_5
-#define PIN_BUZZER      GPIO_NUM_18
+// --- Configurações de Hardware ---
+#define PIN_LED_GREEN   16
+#define PIN_LED_YELLOW  17
+#define PIN_LED_RED     5
+#define PIN_BUZZER      18
 
-// Configurações do Buzzer
-#define BUZZER_MODE     LEDC_LOW_SPEED_MODE
-#define BUZZER_TIMER    LEDC_TIMER_0
-#define BUZZER_CHANNEL  LEDC_CHANNEL_0
-#define BUZZER_RES      LEDC_TIMER_13_BIT
-#define BUZZER_FREQ     4000
-
-// Limites de Temperatura e Umidade
-#define TEMP_MIN 18.0
+// --- Limites do Biotério (Spec MVP) ---
+// Temperatura: 22-26°C
+#define TEMP_MIN 22.0
 #define TEMP_MAX 26.0
+// Umidade: 40-60%
 #define HUM_MIN  40.0
-#define HUM_MAX  70.0
-#define WARN_OFFSET_TEMP 2.0
-#define WARN_OFFSET_HUM  10.0
+#define HUM_MAX  60.0
 
-// Estados do Sistema
-typedef enum {
-    STATE_NORMAL = 0,
-    STATE_WARNING,
-    STATE_CRITICAL
-} system_state_t;
+// Luz: Dia 150-300 lux, Noite ~0
+#define LUX_DAY_MIN 150
+#define LUX_NIGHT_MAX 5 // Tolerância para vazamento de luz
 
-// Estrutura de dados para o DHT (o que vai na fila 1)
-typedef struct {
-    float temperature;
-    float humidity;
-} sensor_reading_t;
+// Ruído (Score 0-100)
+#define NOISE_PEAK_LIMIT 60
+#define NOISE_AVG_LIMIT  40
 
-// Handles das Filas (Globais para serem acessíveis na main e tasks)
-extern QueueHandle_t xSensorQueue;
-extern QueueHandle_t xAlertQueue;
+// --- Filas Globais (Separadas) ---
+extern QueueHandle_t xQueueDHT;   // Carrega dht11_t
+extern QueueHandle_t xQueueLight; // Carrega float
+extern QueueHandle_t xQueueNoise; // Carrega uint16_t (score)
 
-// Protótipos
-void init_gpio();
-void init_buzzer();
-void set_buzzer_tone(int duty);
-
-// Tasks
-void vTaskSensorLogic(void *pvParameters);
-void vTaskAlerts(void *pvParameters);
+// --- Funções ---
+void alerts_init();
+void alerts_trigger_snooze(); // Chama quando apertar botão para silenciar
+void alerts_set_night_mode(bool is_night); // Define se é horário de escuro (fotoperíodo)
 
 #endif

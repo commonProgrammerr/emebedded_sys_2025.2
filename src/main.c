@@ -14,6 +14,7 @@
 #include "button_driver.h"
 #include "uart_json_handler.h" 
 #include "time_sync.h"
+#include "alerts.h"
 
 #define MIC_ADC_PIN 33
 #define MIC_ADC_CHANEL ADC_CHANNEL_5
@@ -61,6 +62,8 @@ void app_main(void)
 {
     xMainTaskHandle = xTaskGetCurrentTaskHandle();
     
+    alerts_init();
+    // Inicializa NVS
     esp_err_t ret = flash_buffer_system_init();
     if (ret != ESP_OK) {
         ESP_LOGE("main", "Falha ao inicializar NVS");
@@ -140,25 +143,41 @@ void save_dht11(sensor_base_t *sensor, void *data)
     dht11_context_t *dht_data = (dht11_context_t *)data;
     current_read.temperature = dht_data->temperature;
     current_read.humidity = dht_data->humidity;
-    save_sensor_read(&current_read);   
+    save_sensor_read(&current_read);  
+ 
+    if (xQueueDHT != NULL) {
+        xQueueSend(xQueueDHT, dht_data, 0); 
+    }
 }
 
 void save_ky037(sensor_base_t *sensor, void *data)
 {
     uint16_t *noise_level = (uint16_t *)data;
+    
     current_read.noise_level = *noise_level;
     save_sensor_read(&current_read);
+
+    
+    if (xQueueNoise != NULL) {
+        xQueueSend(xQueueNoise, noise_level, 0);
+    }
 }
 
 void save_bh1750(sensor_base_t *sensor, void *data)
 {
     float *lux = (float *)data;
+    
     current_read.lux = *lux;
     save_sensor_read(&current_read);
+
+    if (xQueueLight != NULL) {
+        xQueueSend(xQueueLight, lux, 0);
+    }
 }
 
 void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
     compact_sensor_read_t compact_read;
+    
     if(get_moving_average(&compact_read)) {
         ESP_LOGI("AV_CAL", "Media movel - Temp: %.2f C, Hum: %.2f %%, Lux: %.2f lx, Noise: %.2f",
                  RAW_TO_TEMP(compact_read.temperature),

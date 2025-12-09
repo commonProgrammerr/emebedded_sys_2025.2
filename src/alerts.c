@@ -1,140 +1,230 @@
 #include "alerts.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "esp_timer.h"
 
-static const char *TAG = "ALERTS_LOGIC";
+static const char *TAG = "ALERTS_CORE";
 
 // Definição das filas
-QueueHandle_t xSensorQueue = NULL;
-QueueHandle_t xAlertQueue = NULL;
+QueueHandle_t xQueueDHT = NULL;
+QueueHandle_t xQueueLight = NULL;
+QueueHandle_t xQueueNoise = NULL;
 
-void init_gpio() {
+// Variáveis de Estado do Sistema
+static bool is_night_mode = false;
+static bool snooze_active = false;
+static int64_t snooze_start_time = 0;
+
+// Estados Individuais
+typedef enum { STATUS_OK, STATUS_ATTENTION, STATUS_ALARM } SensorStatus_t;
+static SensorStatus_t st_dht = STATUS_OK;
+static SensorStatus_t st_light = STATUS_OK;
+static SensorStatus_t st_noise = STATUS_OK;
+
+// --- Buffers para Médias Móveis e Contadores ---
+// Supondo: DHT a cada 10s, Luz a cada 10s, Ruído a cada 1s
+
+#define DHT_WINDOW 6 // 1 min (6 * 10s)
+static float dht_temp_buf[DHT_WINDOW] = {0};
+static float dht_hum_buf[DHT_WINDOW] = {0};
+static int dht_idx = 0;
+static int dht_count = 0;
+static int dht_violation_counter = 0; // Para regra de >= 3 leituras
+
+#define LIGHT_WINDOW 12 // 2 min (12 * 10s) para checar vazamento
+static int light_violation_counter = 0; 
+
+#define NOISE_PEAK_DURATION 3 // 3 segundos
+static int noise_peak_counter = 0; 
+
+// --- Configuração Buzzer (LEDC) ---
+#define BUZZER_TIMER LEDC_TIMER_0
+#define BUZZER_CHANNEL LEDC_CHANNEL_0
+
+void init_actuators() {
     gpio_reset_pin(PIN_LED_GREEN);
     gpio_reset_pin(PIN_LED_YELLOW);
     gpio_reset_pin(PIN_LED_RED);
-    
     gpio_set_direction(PIN_LED_GREEN, GPIO_MODE_OUTPUT);
     gpio_set_direction(PIN_LED_YELLOW, GPIO_MODE_OUTPUT);
     gpio_set_direction(PIN_LED_RED, GPIO_MODE_OUTPUT);
-}
 
-void init_buzzer() {
+    // Config Buzzer PWM
     ledc_timer_config_t ledc_timer = {
-        .speed_mode       = BUZZER_MODE,
-        .timer_num        = BUZZER_TIMER,
-        .duty_resolution  = BUZZER_RES,
-        .freq_hz          = BUZZER_FREQ,
-        .clk_cfg          = LEDC_AUTO_CLK
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .timer_num = BUZZER_TIMER,
+        .duty_resolution = LEDC_TIMER_10_BIT,
+        .freq_hz = 2000,
+        .clk_cfg = LEDC_AUTO_CLK
     };
     ledc_timer_config(&ledc_timer);
-
     ledc_channel_config_t ledc_channel = {
-        .speed_mode     = BUZZER_MODE,
-        .channel        = BUZZER_CHANNEL,
-        .timer_sel      = BUZZER_TIMER,
-        .intr_type      = LEDC_INTR_DISABLE,
-        .gpio_num       = PIN_BUZZER,
-        .duty           = 0,
-        .hpoint         = 0
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = BUZZER_CHANNEL,
+        .timer_sel = BUZZER_TIMER,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = PIN_BUZZER,
+        .duty = 0,
+        .hpoint = 0
     };
     ledc_channel_config(&ledc_channel);
 }
 
-void set_buzzer_tone(int duty) {
-    ledc_set_duty(BUZZER_MODE, BUZZER_CHANNEL, duty);
-    ledc_update_duty(BUZZER_MODE, BUZZER_CHANNEL);
+void set_buzzer(bool on) {
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, BUZZER_CHANNEL, on ? 512 : 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, BUZZER_CHANNEL);
 }
 
-/**
- * @brief Lógica do sensor
- * Consome dados brutos da xSensorQueue -> Processa -> Envia estado para xAlertQueue
- */
-void vTaskSensorLogic(void *pvParameters) {
-    sensor_reading_t reading;
-    int violation_counter = 0;
-    
-    // Mantemos o estado localmente para lógica de histerese
-    system_state_t current_logic_state = STATE_NORMAL;
+// --- Funções Auxiliares de Cálculo ---
+float calc_avg(float *buf, int count) {
+    float sum = 0;
+    for(int i=0; i<count; i++) sum += buf[i];
+    return (count > 0) ? sum/count : 0;
+}
+
+// --- TASK: Processamento Lógico ---
+void vTaskAlertLogic(void *pvParameters) {
+    dht11_t dht_data;
+    float lux_data;
+    uint16_t noise_data;
 
     for (;;) {
-        // Bloqueia esperando dados do sensor (timeout infinito ou longo)
-        if (xQueueReceive(xSensorQueue, &reading, portMAX_DELAY) == pdTRUE) {
-            
-            float temp = reading.temperature;
-            float hum = reading.humidity;
-            
-            system_state_t new_calculated_state = STATE_NORMAL;
+        // 1. Processar DHT (Temperatura/Umidade)
+        if (xQueueReceive(xQueueDHT, &dht_data, 0) == pdTRUE) {
+            // Adiciona ao buffer circular (Média móvel de 1 min)
+            dht_temp_buf[dht_idx] = dht_data.temperature;
+            dht_hum_buf[dht_idx] = dht_data.humidity;
+            dht_idx = (dht_idx + 1) % DHT_WINDOW;
+            if (dht_count < DHT_WINDOW) dht_count++;
 
-            bool temp_critical = (temp < (TEMP_MIN - WARN_OFFSET_TEMP)) || (temp > (TEMP_MAX + WARN_OFFSET_TEMP));
-            bool hum_critical = (hum < (HUM_MIN - WARN_OFFSET_HUM)) || (hum > (HUM_MAX + WARN_OFFSET_HUM));
-            bool temp_warning = !temp_critical && ((temp < TEMP_MIN) || (temp > TEMP_MAX));
-            bool hum_warning = !hum_critical && ((hum < HUM_MIN) || (hum > HUM_MAX));
+            float avg_t = calc_avg(dht_temp_buf, dht_count);
+            float avg_h = calc_avg(dht_hum_buf, dht_count);
 
-            if (temp_critical || hum_critical) new_calculated_state = STATE_CRITICAL;
-            else if (temp_warning || hum_warning) new_calculated_state = STATE_WARNING;
-            else new_calculated_state = STATE_NORMAL;
+            bool bad_t = (avg_t < TEMP_MIN || avg_t > TEMP_MAX);
+            bool bad_h = (avg_h < HUM_MIN || avg_h > HUM_MAX);
 
-            // Lógica de Debounce/Contador de Violação
-            if (new_calculated_state != STATE_NORMAL) violation_counter++;
-            else violation_counter = 0;
-
-            // Só muda o estado se persistir por 3 leituras ou se voltar ao normal
-            if (violation_counter >= 3 || new_calculated_state == STATE_NORMAL) {
-                current_logic_state = new_calculated_state;
+            // Regra: >= 3 leituras consecutivas fora da faixa
+            if (bad_t || bad_h) {
+                dht_violation_counter++;
+            } else {
+                dht_violation_counter = 0; // Reset se voltar ao normal
             }
 
-            ESP_LOGI(TAG, "Processado: T:%.1f H:%.1f | Estado: %d | Violacoes: %d", 
-                     temp, hum, current_logic_state, violation_counter);
+            if (dht_violation_counter >= 3) st_dht = STATUS_ALARM;
+            else if (dht_violation_counter > 0) st_dht = STATUS_ATTENTION;
+            else st_dht = STATUS_OK;
 
-            // Envia o estado processado para a task de Alertas
-            // Usamos xQueueOverwrite para garantir que o alerta tenha sempre o estado mais recente
-            // (Requer fila de tamanho 1)
-            xQueueOverwrite(xAlertQueue, &current_logic_state);
+            ESP_LOGI(TAG, "DHT Avg T:%.1f H:%.1f | Violations: %d | State: %d", avg_t, avg_h, dht_violation_counter, st_dht);
         }
+
+        // 2. Processar Luz
+        if (xQueueReceive(xQueueLight, &lux_data, 0) == pdTRUE) {
+            if (is_night_mode) {
+                // Regra: Alerta se luz > 0 (tolerância 5) por > 2 min
+                if (lux_data > LUX_NIGHT_MAX) light_violation_counter++;
+                else light_violation_counter = 0;
+
+                // Se amostra a cada 10s -> 2 min = 12 amostras
+                if (light_violation_counter >= 12) st_light = STATUS_ALARM;
+                else if (light_violation_counter > 0) st_light = STATUS_ATTENTION;
+                else st_light = STATUS_OK;
+            } else {
+                // Modo Diurno (Regra simples: não pode estar breu)
+                if (lux_data < 50) st_light = STATUS_ATTENTION;
+                else st_light = STATUS_OK;
+            }
+        }
+
+        // 3. Processar Ruído
+        if (xQueueReceive(xQueueNoise, &noise_data, 0) == pdTRUE) {
+            // Regra: Pico > 3s (assumindo leitura 1s -> 3 amostras)
+            if (noise_data > NOISE_PEAK_LIMIT) noise_peak_counter++;
+            else noise_peak_counter = 0;
+
+            if (noise_peak_counter >= 3) st_noise = STATUS_ALARM;
+            else if (noise_data > NOISE_AVG_LIMIT) st_noise = STATUS_ATTENTION;
+            else st_noise = STATUS_OK;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100)); // Pequeno delay para não travar a CPU
     }
 }
 
-/**
- * @brief Task de Controle de Atuadores
- * Lê o estado da xAlertQueue e controla LEDs/Buzzer
- */
-void vTaskAlerts(void *pvParameters) {
-    int toggle_counter = 0;
-    system_state_t active_state = STATE_NORMAL; // Estado local da task
+// --- TASK: Atuadores (Feedback Visual/Sonoro) ---
+void vTaskAlertActuators(void *pvParameters) {
+    int tick = 0;
 
     for (;;) {
-        // Verifica se há um novo estado na fila. 
-        // Delay 0 = não bloqueia. Se não tiver nada, continua com o estado anterior.
-        system_state_t received_state;
-        if (xQueueReceive(xAlertQueue, &received_state, 0) == pdTRUE) {
-            active_state = received_state;
-            ESP_LOGD(TAG, "Estado atualizado nos alertas: %d", active_state);
-        }
+        // Determina o pior estado geral
+        SensorStatus_t global_state = STATUS_OK;
+        if (st_dht == STATUS_ALARM || st_light == STATUS_ALARM || st_noise == STATUS_ALARM) 
+            global_state = STATUS_ALARM;
+        else if (st_dht == STATUS_ATTENTION || st_light == STATUS_ATTENTION || st_noise == STATUS_ATTENTION) 
+            global_state = STATUS_ATTENTION;
 
-        // Reseta tudo antes de aplicar a lógica do ciclo atual
+        // Reset LEDs
         gpio_set_level(PIN_LED_GREEN, 0);
         gpio_set_level(PIN_LED_YELLOW, 0);
         gpio_set_level(PIN_LED_RED, 0);
-        set_buzzer_tone(0); 
 
-        switch (active_state) {
-            case STATE_NORMAL:
+        // Lógica Snooze (Expira após 10 min)
+        if (snooze_active && (esp_timer_get_time() - snooze_start_time > 600000000)) {
+            snooze_active = false; // Snooze acabou
+        }
+
+        switch (global_state) {
+            case STATUS_OK:
                 gpio_set_level(PIN_LED_GREEN, 1);
+                set_buzzer(false);
                 break;
-                
-            case STATE_WARNING:
-                // Pisca Amarelo (Frequência média)
-                gpio_set_level(PIN_LED_YELLOW, (toggle_counter % 10) < 5); 
+
+            case STATUS_ATTENTION:
+                // Pisca Amarelo
+                if ((tick % 10) < 5) gpio_set_level(PIN_LED_YELLOW, 1);
+                set_buzzer(false);
                 break;
+
+            case STATUS_ALARM:
+                gpio_set_level(PIN_LED_RED, 1);
                 
-            case STATE_CRITICAL:
-                // Pisca Vermelho rápido + Buzzer
-                bool state_on = (toggle_counter % 5) < 2; 
-                gpio_set_level(PIN_LED_RED, state_on);
-                if (state_on) set_buzzer_tone(4000); 
+                // Lógica Buzzer: Toque curto a cada 30s
+                // 30s = 300 ticks de 100ms. Toque curto = 5 ticks (0.5s)
+                bool buzzer_time = (tick % 300) < 5; 
+                
+                if (buzzer_time && !snooze_active) {
+                    set_buzzer(true);
+                } else {
+                    set_buzzer(false);
+                }
                 break;
         }
 
-        toggle_counter++;
-        vTaskDelay(pdMS_TO_TICKS(100)); // Base de tempo da animação
+        tick++;
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
+}
+
+// --- Funções Públicas ---
+void alerts_init() {
+    init_actuators();
+    
+    // Criação das filas (Tamanho 5 é suficiente pois consumimos rápido)
+    xQueueDHT = xQueueCreate(5, sizeof(dht11_t));
+    xQueueLight = xQueueCreate(5, sizeof(float));
+    xQueueNoise = xQueueCreate(5, sizeof(uint16_t));
+
+    xTaskCreate(vTaskAlertLogic, "AlertLogic", 4096, NULL, 5, NULL);
+    xTaskCreate(vTaskAlertActuators, "AlertActuators", 2048, NULL, 5, NULL);
+}
+
+void alerts_trigger_snooze() {
+    snooze_active = true;
+    snooze_start_time = esp_timer_get_time();
+    ESP_LOGI(TAG, "Snooze ativado por 10 min");
+}
+
+void alerts_set_night_mode(bool is_night) {
+    is_night_mode = is_night;
+    ESP_LOGI(TAG, "Modo Noturno: %d", is_night);
 }
