@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "DHT11";
 
@@ -22,6 +23,16 @@ SensorStatus_t dht11_init(sensor_base_t *self, uint8_t pin, uint32_t timeout)
 
     ((dht11_context_t *)self->context)->sensor.dht11_pin = pin;
     ((dht11_context_t *)self->context)->timeout = timeout;
+
+    // Configurar GPIO com pull-up interno
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << pin),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&io_conf);
 
     self->read_data = dht11_read_data;
     self->deinit = dht11_deinit;
