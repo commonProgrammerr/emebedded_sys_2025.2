@@ -27,8 +27,8 @@ SensorStatus_t bh1750fvi_init(sensor_base_t *self, uint8_t sda_io, uint8_t scl_i
 
     bh1750fvi_context_t *context = (bh1750fvi_context_t *)self->context;
 
-    // Inicializa toda a estrutura com zeros primeiro
-    memset(&context->i2c_bus_config, 0, sizeof(i2c_master_bus_config_t));
+    // Inicializa toda a estrutura context com zeros
+    memset(context, 0, sizeof(bh1750fvi_context_t));
     
     context->i2c_bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
     context->i2c_bus_config.i2c_port = 0; // I2C_NUM_0
@@ -36,6 +36,7 @@ SensorStatus_t bh1750fvi_init(sensor_base_t *self, uint8_t sda_io, uint8_t scl_i
     context->i2c_bus_config.sda_io_num = sda_io;
     context->i2c_bus_config.glitch_ignore_cnt = 7;
     context->i2c_bus_config.flags.enable_internal_pullup = true; // Usa pull-ups internos
+    context->i2c_bus_config.intr_priority = 0; // Usa prioridade padrão
 
     esp_err_t err = i2c_new_master_bus(&context->i2c_bus_config, &context->bus_handle);
     if (err != ESP_OK)
