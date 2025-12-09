@@ -1,4 +1,5 @@
 #include "sensor_history.h"
+#include <string.h>
 
 static compact_sensor_read_t *history_buffer = NULL;
 static size_t history_size = 0;

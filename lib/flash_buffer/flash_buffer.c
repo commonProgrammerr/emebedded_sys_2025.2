@@ -40,7 +40,7 @@ esp_err_t flash_buffer_system_init(void)
 
 flash_buffer_t *flash_buffer_init(const char *namespace, size_t sample_size, uint32_t max_samples)
 {
-    if (!namespace || max_samples == 0 || max_samples > 100)
+    if (!namespace || max_samples == 0 || (max_samples*sample_size) > (16 * 1024))
     {
         ESP_LOGE(TAG, "Parâmetros inválidos");
         return NULL;
