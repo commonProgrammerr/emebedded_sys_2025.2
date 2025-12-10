@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "uart_json_handler.h"
 
 static const char *TAG = "BTN_INTERFACE";
 
@@ -85,8 +86,11 @@ void buttons_process(void) {
                     break;
             }
         } else if (event == 2) {
-            // Espaço reservado para Callback de Long Press futuro
-            ESP_LOGI(TAG, "Acao de Long Press (Futura)");
+            // Long press: realizar dump do histórico via UART, limpar e reiniciar
+            ESP_LOGI(TAG, "Long Press: iniciando dump do historico e reinicio");
+            if (uart_json_dump_flash_and_restart() != UART_JSON_OK) {
+                ESP_LOGW(TAG, "Falha ao realizar dump via UART");
+            }
         }
     }
 }

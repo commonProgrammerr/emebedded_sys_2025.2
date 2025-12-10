@@ -38,6 +38,19 @@ esp_err_t flash_buffer_system_init(void)
     return ret;
 }
 
+/* Global buffer pointer (optional usage) */
+static flash_buffer_t* g_flash_buffer = NULL;
+
+void flash_buffer_set_global(flash_buffer_t* buffer)
+{
+    g_flash_buffer = buffer;
+}
+
+flash_buffer_t* flash_buffer_get_global(void)
+{
+    return g_flash_buffer;
+}
+
 flash_buffer_t *flash_buffer_init(const char *namespace, size_t sample_size, uint32_t max_samples)
 {
     if (!namespace || max_samples == 0 || (max_samples*sample_size) > (16 * 1024))

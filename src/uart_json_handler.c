@@ -1,4 +1,9 @@
 #include "uart_json_handler.h"
+#include "flash_buffer.h"
+#include "flash_record.h"
+#include "sensor_history.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 
 /*
  * Note: other platform includes, defines and typedefs were moved to the header
@@ -203,26 +208,20 @@ uart_json_status_t uart_json_send_record(const read_record_t* record) {
     if (record == NULL) {
         return UART_JSON_INVALID_INPUT;
     }
-    char json_buf[128];
-    int len = snprintf(json_buf, sizeof(json_buf),
-                       "{\"time\":%u,\"temp\":%.2f,\"humi\":%.2f,\"light\":%u,\"noise\":%u}",
-                       (unsigned)record->id,
-                       (double)record->temperature,
-                       (double)record->humidity,
-                       (unsigned)record->light,
-                       (unsigned)record->noise);
-
-    if (len <= 0) {
-        ESP_LOGE(TAG, "Erro ao formatar JSON");
-        return UART_JSON_ERROR;
+    
+    if (xSemaphoreTake(uart_mutex, portMAX_DELAY) != pdTRUE) {
+        return UART_JSON_TX_BUSY;
     }
-
-    uart_json_status_t status = uart_json_transmit((uint8_t*)json_buf, (uint32_t)len);
-    if (status == UART_JSON_OK) {
-        uart_json_transmit((uint8_t*)"\n", 1);
-    }
-
-    return status;
+    
+    printf("{\"time\":%u,\"temp\":%.2f,\"humi\":%.2f,\"light\":%u,\"noise\":%u}\n",
+           (unsigned)record->id,
+           (double)record->temperature,
+           (double)record->humidity,
+           (unsigned)record->light,
+           (unsigned)record->noise);
+    
+    xSemaphoreGive(uart_mutex);
+    return UART_JSON_OK;
 }
 
 /**
@@ -233,44 +232,25 @@ uart_json_status_t uart_json_send_history(const read_record_t* history, uint16_t
         return UART_JSON_INVALID_INPUT;
     }
 
-    /* Stream the JSON array using direct UART writes to avoid filling the
-       circular buffer when sending large histories. This blocks on the
-       UART mutex so the caller will wait until all bytes are written. */
-    uart_json_status_t status;
-    status = uart_json_write_direct((const uint8_t*)"[", 1);
-    if (status != UART_JSON_OK) return status;
+    if (xSemaphoreTake(uart_mutex, portMAX_DELAY) != pdTRUE) {
+        return UART_JSON_TX_BUSY;
+    }
 
-    char json_buf[128];
+    printf("[");
     for (uint16_t i = 0; i < count; i++) {
-        if (i > 0) {
-            status = uart_json_write_direct((const uint8_t*)",", 1);
-            if (status != UART_JSON_OK) return status;
-        }
-
-        int len = snprintf(json_buf, sizeof(json_buf),
-                           "{\"time\":%u,\"temp\":%.2f,\"humi\":%.2f,\"light\":%u,\"noise\":%u}",
-                           (unsigned)history[i].id,
-                           (double)history[i].temperature,
-                           (double)history[i].humidity,
-                           (unsigned)history[i].light,
-                           (unsigned)history[i].noise);
-
-        if (len <= 0) {
-            ESP_LOGE(TAG, "Erro ao formatar JSON para record %u", (unsigned)i);
-            return UART_JSON_ERROR;
-        }
-
-        status = uart_json_write_direct((const uint8_t*)json_buf, (uint32_t)len);
-        if (status != UART_JSON_OK) return status;
+        if (i > 0) printf(",");
+        printf("{\"time\":%u,\"temp\":%.2f,\"humi\":%.2f,\"light\":%u,\"noise\":%u}",
+               (unsigned)history[i].id,
+               (double)history[i].temperature,
+               (double)history[i].humidity,
+               (unsigned)history[i].light,
+               (unsigned)history[i].noise);
     }
+    printf("]\n");
 
-    status = uart_json_write_direct((const uint8_t*)"]", 1);
-    if (status == UART_JSON_OK) {
-        uart_json_write_direct((const uint8_t*)"\n", 1);
-    }
-
+    xSemaphoreGive(uart_mutex);
     ESP_LOGI(TAG, "Histórico de %d registros enviado", count);
-    return status;
+    return UART_JSON_OK;
 }
 
 /**
@@ -371,4 +351,80 @@ uart_json_status_t circular_buffer_clear(void) {
 void uart_interrupt_handler(void) {
     // Esta função pode ser expandida para lidar com interrupções da UART
     // Por enquanto, mantém a estrutura básica
+}
+
+/**
+ * @brief Lê todo o conteúdo do buffer de flash, envia via UART em JSON,
+ *        limpa os históricos (RAM e flash) e reinicia o dispositivo.
+ */
+uart_json_status_t uart_json_dump_flash_and_restart(void)
+{
+    flash_buffer_t *fb = flash_buffer_get_global();
+    if (!fb) {
+        ESP_LOGE(TAG, "Flash buffer global não inicializado");
+        return UART_JSON_ERROR;
+    }
+
+    uint32_t count = flash_buffer_get_count(fb);
+    if (count == 0) {
+        ESP_LOGI(TAG, "Nenhuma amostra na flash para dump");
+        return UART_JSON_OK;
+    }
+
+    // Aloca buffer para leitura
+    flash_record_t *records = malloc(sizeof(flash_record_t) * count);
+    if (!records) {
+        ESP_LOGE(TAG, "Falha ao alocar memória para leitura da flash");
+        return UART_JSON_ERROR;
+    }
+
+    uint32_t read = flash_buffer_read(fb, records, count);
+    if (read == 0) {
+        ESP_LOGW(TAG, "Nenhuma amostra lida da flash (count=%d)", count);
+        free(records);
+        return UART_JSON_ERROR;
+    }
+
+    // Envia JSON array (mais antigo primeiro)
+    if (xSemaphoreTake(uart_mutex, portMAX_DELAY) != pdTRUE) {
+        free(records);
+        return UART_JSON_TX_BUSY;
+    }
+
+    printf("[");
+    for (int i = (int)read - 1; i >= 0; i--) {
+        // Converte compacto -> full
+        full_sensor_read_t full = {0};
+        compact_to_full(&records[i].compact, &full);
+
+        if (i != (int)read - 1) {
+            printf(",");
+        }
+
+        printf("{\"time\":%u,\"temp\":%.2f,\"humi\":%.2f,\"light\":%.2f,\"noise\":%u}",
+               (unsigned)records[i].timestamp,
+               (double)full.temperature,
+               (double)full.humidity,
+               (double)full.lux,
+               (unsigned)full.noise_level);
+    }
+    printf("]\n");
+
+    xSemaphoreGive(uart_mutex);
+
+    free(records);
+
+    // Limpa histórico em RAM
+    init_history_system(60);
+    // Limpa flash
+    esp_err_t err = flash_buffer_clear(fb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Falha ao limpar flash buffer: %s", esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG, "Dump concluído, reiniciando dispositivo em 500ms...");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+
+    return UART_JSON_OK; // não alcançado
 }
