@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "bh1750fvi_sensor.h"
 #include "dht11_sensor.h"
 #include "KY-037_sensor.h"
@@ -10,6 +11,7 @@
 #include "flash_buffer.h"
 #include "flash_record.h"
 #include "esp_timer.h"
+#include "button_driver.h" 
 
 #define MIC_ADC_PIN 33
 #define MIC_ADC_CHANEL ADC_CHANNEL_5
@@ -21,19 +23,37 @@
 
 #define DHT11_READ_INTERVAL_MS 5000
 #define BH1750_READ_INTERVAL_MS 10000
+#define DHT11_READ_INTERVAL_MS 5000
+#define BH1750_READ_INTERVAL_MS 10000
 #define KY037_READ_INTERVAL_MS 1000
+
+// Bits para eventos do botão via xTaskNotify
+#define EVT_BTN_CLICKED  0x01
+#define EVT_BTN_LONG     0x02
 
 flash_buffer_t *buffer = NULL;
 full_sensor_read_t current_read = {0};
 
+// Sistema de botões com notificação assíncrona
+TaskHandle_t xMainTaskHandle = NULL;
+uint32_t btn_notification_value = 0;
+Button_t btn_nav;
+
+// Callbacks de salvamento de dados dos sensores
 void save_dht11(sensor_base_t *sensor, void *data);
 void save_ky037(sensor_base_t *sensor, void *data);
 void save_bh1750(sensor_base_t *sensor, void *data);
+
+// Timer callback para cálculo de média móvel
 void av_cal_monitor_timer_callback(TimerHandle_t xTimer);
+
+// Callback do botão
+void button_callback(int pin, button_event_t event);
 
 void app_main(void)
 {
-    // Inicializa NVS
+    xMainTaskHandle = xTaskGetCurrentTaskHandle();
+    
     esp_err_t ret = flash_buffer_system_init();
     if (ret != ESP_OK) {
         ESP_LOGE("main", "Falha ao inicializar NVS");
@@ -41,7 +61,6 @@ void app_main(void)
     }
 
     // Cria buffer (1440 amostras = 24h com 1 amostra por minuto)
-    // Agora armazenamos um record que inclui timestamp + leitura compacta
     buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 1440);
     if (!buffer) {
         ESP_LOGE("main", "Falha ao criar buffer");
@@ -49,65 +68,65 @@ void app_main(void)
     }
     // Torna o buffer acessível globalmente para outras partes do firmware
     flash_buffer_set_global(buffer);
-
-
-    // Histórico de 60 registros (1 amostra por segundo)
+  
     init_history_system(60); 
+
+    // Inicializa botão com interrupção GPIO e callback assíncrono
+    button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, button_callback, xMainTaskHandle);
+
+    // Teste: aguarda 5s por evento do botão, se detectar faz reboot
+    if (xTaskNotifyWait(0, 0xFFFFFFFF, &btn_notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        
+        if (btn_notification_value & EVT_BTN_LONG) {
+            ESP_LOGI("BUTTON_TEST", ">>> EVENTO DETECTADO: Long Press <<<");
+        }
+        
+        if (btn_notification_value & EVT_BTN_CLICKED) {
+            ESP_LOGI("BUTTON_TEST", ">>> EVENTO DETECTADO: Click Simples <<<");
+        }
+        
+        ESP_LOGW("BUTTON_TEST", "Evento detectado! Reiniciando em 1 segundo...");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        ESP_LOGW("BUTTON_TEST", "REBOOTING NOW!");
+        esp_restart();
+    }
 
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
     bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
-    dht11_init(&dht11, DHT11_PIN, 5000);  // Aumentar timeout para 5000ms
+    dht11_init(&dht11, DHT11_PIN, 5000); 
     KY037_init(&ky_037, MIC_ADC_CHANEL);
 
     sensor_monitor_t *th_monitor = new_sensor_monitor(
-        &dht11,
-        DHT11_READ_INTERVAL_MS,
-        sizeof(dht11_t),
-        "temp&humidity_monitor",
-        save_dht11);
+        &dht11, DHT11_READ_INTERVAL_MS, sizeof(dht11_t), "temp&humidity_monitor", save_dht11);
 
     sensor_monitor_t *noise_monitor = new_sensor_monitor(
-        &ky_037,
-        KY037_READ_INTERVAL_MS,
-        sizeof(float),
-        "noise_monitor",
-        save_ky037);
+        &ky_037, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_ky037);
 
     sensor_monitor_t *light_monitor = new_sensor_monitor(
-        &bh1750,
-        BH1750_READ_INTERVAL_MS,
-        sizeof(float),
-        "light_monitor",
-        save_bh1750);
+        &bh1750, BH1750_READ_INTERVAL_MS, sizeof(float), "light_monitor", save_bh1750);
 
     if (th_monitor) start_sensor_monitoring(th_monitor);
     if (noise_monitor) start_sensor_monitoring(noise_monitor);
     if (light_monitor) start_sensor_monitoring(light_monitor);
     
-    ESP_LOGI("main", "Sistema iniciado. Monitorando sensores...");
+    ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
+    if (th_monitor) start_sensor_monitoring(th_monitor);
+    if (noise_monitor) start_sensor_monitoring(noise_monitor);
+    if (light_monitor) start_sensor_monitoring(light_monitor);
     
-    // Cria e inicia o timer de média móvel
+    ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
+    
+    // Timer para cálculo de média móvel a cada 60s
     TimerHandle_t av_timer = xTimerCreate(
-        "av_calculation_timer",
-        pdMS_TO_TICKS(60000),  // 60 segundos
-        pdTRUE,                // Auto-reload (repetir)
-        NULL,                  // Timer ID
-        av_cal_monitor_timer_callback
+        "av_calculation_timer", pdMS_TO_TICKS(60000), pdTRUE, NULL, av_cal_monitor_timer_callback
     );
 
-    if (av_timer != NULL) {
-        if (xTimerStart(av_timer, 0) == pdPASS) {
-            ESP_LOGI("main", "Timer de média móvel iniciado (60s)");
-        } else {
-            ESP_LOGE("main", "Falha ao iniciar timer");
-        }
-    } else {
-        ESP_LOGE("main", "Falha ao criar timer");
-    }
-
+    if (av_timer != NULL) xTimerStart(av_timer, 0);
+    
     for (;;)
         vTaskDelay(portMAX_DELAY);
+    
 }
 
 void save_dht11(sensor_base_t *sensor, void *data)
@@ -135,7 +154,7 @@ void save_bh1750(sensor_base_t *sensor, void *data)
 void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
     compact_sensor_read_t compact_read;
     if(get_moving_average(&compact_read)) {
-        ESP_LOGI("AV_CAL", "Média móvel - Temp: %.2f °C, Hum: %.2f %%, Lux: %.2f lx, Noise: %.2f",
+        ESP_LOGI("AV_CAL", "Media movel - Temp: %.2f C, Hum: %.2f %%, Lux: %.2f lx, Noise: %.2f",
                  RAW_TO_TEMP(compact_read.temperature),
                  RAW_TO_HUMID(compact_read.humidity),
                  RAW_TO_LUX(compact_read.lux),
@@ -146,4 +165,17 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
         frec.compact = compact_read;
         flash_buffer_write(buffer, &frec);
     }
+}
+
+void button_callback(int pin, button_event_t event)
+{
+    uint32_t notify_value = 0;
+    
+    if (event == BUTTON_PRESS_LONG) {
+        notify_value |= EVT_BTN_LONG;
+    } else if (event == BUTTON_PRESS_SHORT) {
+        notify_value |= EVT_BTN_CLICKED;
+    }
+    
+    xTaskNotify(xMainTaskHandle, notify_value, eSetBits);
 }
