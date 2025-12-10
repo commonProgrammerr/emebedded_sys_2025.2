@@ -2,14 +2,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "bh1750fvi_sensor.h"
 #include "dht11_sensor.h"
 #include "KY-037_sensor.h"
 #include "sensor_monitor.h"
 #include "sensor_history.h"
 #include "flash_buffer.h"
-
-// --- NOVO INCLUDE DA TASK #32 ---
 #include "button_driver.h" 
 
 #define MIC_ADC_PIN 33
@@ -22,50 +21,43 @@
 
 #define DHT11_READ_INTERVAL_MS 5000
 #define BH1750_READ_INTERVAL_MS 10000
+#define DHT11_READ_INTERVAL_MS 5000
+#define BH1750_READ_INTERVAL_MS 10000
 #define KY037_READ_INTERVAL_MS 1000
 
-// Bits de Notificação para os Eventos do Botão
+// Bits para eventos do botão via xTaskNotify
 #define EVT_BTN_CLICKED  0x01
 #define EVT_BTN_LONG     0x02
 
 flash_buffer_t *buffer = NULL;
 full_sensor_read_t current_read = {0};
 
-// Variáveis para o sistema de botões
+// Sistema de botões com notificação assíncrona
 TaskHandle_t xMainTaskHandle = NULL;
+uint32_t btn_notification_value = 0;
 Button_t btn_nav;
 
+// Callbacks de salvamento de dados dos sensores
 void save_dht11(sensor_base_t *sensor, void *data);
 void save_ky037(sensor_base_t *sensor, void *data);
 void save_bh1750(sensor_base_t *sensor, void *data);
+
+// Timer callback para cálculo de média móvel
 void av_cal_monitor_timer_callback(TimerHandle_t xTimer);
 
-// --- CALLBACK DO BOTÃO (Task #32) ---
-// O driver chama isso, e isso avisa a main task via Notify
-void my_button_callback(int pin, button_event_t event) {
-    if (xMainTaskHandle != NULL) {
-        if (event == BUTTON_PRESS_LONG) {
-            xTaskNotify(xMainTaskHandle, EVT_BTN_LONG, eSetBits);
-        } else {
-            // Curto ou Normal tratamos como clique simples
-            xTaskNotify(xMainTaskHandle, EVT_BTN_CLICKED, eSetBits);
-        }
-    }
-}
+// Callback do botão
+void button_callback(int pin, button_event_t event);
 
 void app_main(void)
 {
-    // 1. Captura o Handle da Task Main (Para receber notificações)
     xMainTaskHandle = xTaskGetCurrentTaskHandle();
-
-    // 2. Inicializa NVS
+    
     esp_err_t ret = flash_buffer_system_init();
     if (ret != ESP_OK) {
         ESP_LOGE("main", "Falha ao inicializar NVS");
         return;
     }
 
-    // 3. Inicializa Buffer e Histórico
     buffer = flash_buffer_init("sensors", sizeof(compact_sensor_read_t), 1440);
     if (!buffer) {
         ESP_LOGE("main", "Falha ao criar buffer");
@@ -73,11 +65,26 @@ void app_main(void)
     }
     init_history_system(60); 
 
-    // 4. Inicializa o Botão com o novo Driver (Task #32)
-    // Passamos o pino definido e a função de callback criada acima
-    button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, my_button_callback);
+    // Inicializa botão com interrupção GPIO e callback assíncrono
+    button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, button_callback, xMainTaskHandle);
 
-    // 5. Inicializa Sensores
+    // Teste: aguarda 5s por evento do botão, se detectar faz reboot
+    if (xTaskNotifyWait(0, 0xFFFFFFFF, &btn_notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        
+        if (btn_notification_value & EVT_BTN_LONG) {
+            ESP_LOGI("BUTTON_TEST", ">>> EVENTO DETECTADO: Long Press <<<");
+        }
+        
+        if (btn_notification_value & EVT_BTN_CLICKED) {
+            ESP_LOGI("BUTTON_TEST", ">>> EVENTO DETECTADO: Click Simples <<<");
+        }
+        
+        ESP_LOGW("BUTTON_TEST", "Evento detectado! Reiniciando em 1 segundo...");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        ESP_LOGW("BUTTON_TEST", "REBOOTING NOW!");
+        esp_restart();
+    }
+
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
     bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
@@ -98,43 +105,23 @@ void app_main(void)
     if (light_monitor) start_sensor_monitoring(light_monitor);
     
     ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
+    if (th_monitor) start_sensor_monitoring(th_monitor);
+    if (noise_monitor) start_sensor_monitoring(noise_monitor);
+    if (light_monitor) start_sensor_monitoring(light_monitor);
     
-    // 6. Configura Timer de Média
+    ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
+    
+    // Timer para cálculo de média móvel a cada 60s
     TimerHandle_t av_timer = xTimerCreate(
         "av_calculation_timer", pdMS_TO_TICKS(60000), pdTRUE, NULL, av_cal_monitor_timer_callback
     );
 
     if (av_timer != NULL) xTimerStart(av_timer, 0);
-
-    // 7. Loop Principal Atualizado (Processamento de Botão e Notificações)
-    uint32_t notification_value = 0;
     
     for (;;)
-    {
-        // A. Processa o driver do botão (Polling)
-        button_process(&btn_nav);
-
-        // B. Verifica se o callback do botão mandou algum sinal
-        // Timeout 0 para não travar o loop do botão
-        if (xTaskNotifyWait(0, 0xFFFFFFFF, &notification_value, 0) == pdTRUE) {
-            
-            if (notification_value & EVT_BTN_LONG) {
-                ESP_LOGI("MAIN", "EVENTO: Botao Long Press Detectado!");
-                // Adicione lógica de reset ou menu aqui
-            }
-            
-            if (notification_value & EVT_BTN_CLICKED) {
-                ESP_LOGI("MAIN", "EVENTO: Botao Clique Simples Detectado!");
-                // Adicione lógica de navegação aqui
-            }
-        }
-
-        // Delay curto para definir a taxa de amostragem do botão (100Hz = 10ms)
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
+        vTaskDelay(portMAX_DELAY);
+    
 }
-
-// --- Funções de Callback dos Sensores (Mantidas iguais) ---
 
 void save_dht11(sensor_base_t *sensor, void *data)
 {
@@ -168,4 +155,17 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
                  RAW_TO_NOISE(compact_read.noise_level));
         flash_buffer_write(buffer, &compact_read);
     }
+}
+
+void button_callback(int pin, button_event_t event)
+{
+    uint32_t notify_value = 0;
+    
+    if (event == BUTTON_PRESS_LONG) {
+        notify_value |= EVT_BTN_LONG;
+    } else if (event == BUTTON_PRESS_SHORT) {
+        notify_value |= EVT_BTN_CLICKED;
+    }
+    
+    xTaskNotify(xMainTaskHandle, notify_value, eSetBits);
 }
