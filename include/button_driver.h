@@ -20,16 +20,17 @@ typedef void (*button_callback_t)(int pin, button_event_t event);
 typedef struct {
     gpio_num_t pin;             // O pino físico
     button_callback_t callback; // A função que será chamada quando ocorrer evento
+    TaskHandle_t task_to_notify; // Task que receberá o notify
     
     // Variáveis internas de controle (privadas na lógica)
     int64_t press_start_time;
     bool is_pressed;
 } Button_t;
 
-// Construtor: Inicializa o botão
-void button_init(Button_t *btn, gpio_num_t pin, button_callback_t cb);
+// Inicializa o botão com interrupção
+void button_init(Button_t *btn, gpio_num_t pin, button_callback_t cb, TaskHandle_t task_handle);
 
-// Loop: Deve ser chamado periodicamente para checar esse botão
-void button_process(Button_t *btn);
+// Task interna que processa os eventos (chamada automaticamente)
+void button_task(void *pvParameters);
 
 #endif
