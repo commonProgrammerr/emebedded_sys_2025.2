@@ -98,7 +98,7 @@ uart_json_status_t uart_json_send_string(const char* json_string);
  * @brief Lê todo o conteúdo do `flash_buffer` (registros timestamp+compact) e envia via UART
  *        Em seguida limpa o histórico (RAM e flash) e reinicia o dispositivo.
  */
-uart_json_status_t uart_json_dump_flash_and_restart(void);
+uart_json_status_t uart_json_dump_flash_and_restart(flash_buffer_t *buffer);
 
 /**
  * @brief Processa dados recebidos da UART
