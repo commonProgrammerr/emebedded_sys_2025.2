@@ -14,6 +14,7 @@ O módulo `flash_buffer` permite salvar amostras de sensores na memória flash d
 - ✅ **Múltiplos buffers**: Suporta diferentes namespaces
 - ✅ **Robusto**: Tratamento de dados corrompidos e validação de integridade
 - ✅ **Seguro**: Inicialização com zeros e verificação de tamanhos
+- ✅ **Leitura em Chunks**: Processa grandes volumes de dados sem esgotar memória
 
 ## Como Funciona
 
@@ -96,7 +97,32 @@ bool full = flash_buffer_is_full(buffer);
 printf("Buffer: %lu/50 amostras%s\n", count, full ? " (cheio)" : "");
 ```
 
-### 5. Limpar e Finalizar
+### 5. Ler em Chunks (Grandes Volumes)
+
+```c
+// Callback para processar cada chunk
+esp_err_t process_chunk(const void* samples, uint32_t count) {
+    sensor_read_t* data = (sensor_read_t*)samples;
+    
+    for (uint32_t i = 0; i < count; i++) {
+        printf("[%lu] Temp: %.1f°C, Hum: %.1f%%\n", 
+               i, data[i].temperature, data[i].humidity);
+    }
+    
+    return ESP_OK;
+}
+
+// Processa todo o buffer em chunks de 10 amostras
+flash_buffer_read_in_chunks(buffer, process_chunk, 10);
+```
+
+**Vantagens da leitura em chunks:**
+- Não requer alocar memória para todas as amostras de uma vez
+- Ideal para buffers grandes (>100 amostras)
+- Processa dados da amostra mais antiga para a mais recente
+- Callback pode enviar dados via UART, salvar em SD, etc.
+
+### 6. Limpar e Finalizar
 
 ```c
 // Limpar todas as amostras
@@ -168,9 +194,40 @@ void app_main(void) {
 }
 ```
 
-## Correções Recentes (v1.1)
+## Histórico de Versões
 
-### Problema de Dados Corrompidos - RESOLVIDO ✓
+### v1.2 (Dezembro 2025) - NEW
+
+**Novos Recursos:**
+
+1. **Leitura em Chunks** (`flash_buffer_read_in_chunks`)
+   - Processa grandes volumes de dados sem esgotar memória RAM
+   - Callback para processar cada chunk
+   - Ideal para buffers com centenas de amostras
+   - Lê da amostra mais antiga para a mais recente
+
+2. **Global Buffer Accessors**
+   - `flash_buffer_set_global()` / `flash_buffer_get_global()`
+   - Facilita acesso ao buffer de diferentes módulos
+   - Opcional - não necessário para operação normal
+
+**Exemplo de uso da leitura em chunks:**
+```c
+esp_err_t send_via_uart(const void* samples, uint32_t count) {
+    sensor_read_t* data = (sensor_read_t*)samples;
+    for (uint32_t i = 0; i < count; i++) {
+        uart_send_json(&data[i]);
+    }
+    return ESP_OK;
+}
+
+// Envia todas as 200 amostras em chunks de 20
+flash_buffer_read_in_chunks(buffer, send_via_uart, 20);
+```
+
+### v1.1 (Dezembro 2025)
+
+**Correção: Problema de Dados Corrompidos - RESOLVIDO ✓**
 
 **Sintoma**: Valores absurdos ao ler da flash (ex: `-17826336093472827671582867456.0°C`)
 
@@ -223,17 +280,27 @@ void app_main(void) {
    flash_buffer_read(buffer, samples, 10);
    ```
 
-3. **Use múltiplos namespaces para diferentes tipos**
+3. **Use leitura em chunks para grandes volumes**:
+   ```c
+   // EVITE: Alocar 200 amostras de uma vez (consome muita RAM)
+   sensor_read_t samples[200];
+   flash_buffer_read(buffer, samples, 200);
+   
+   // PREFIRA: Processar em chunks menores
+   flash_buffer_read_in_chunks(buffer, process_chunk, 20);
+   ```
+
+4. **Use múltiplos namespaces para diferentes tipos**
    ```c
    flash_buffer_t* daily = flash_buffer_init("daily", sizeof(read_t), 100);
    flash_buffer_t* hourly = flash_buffer_init("hourly", sizeof(read_t), 50);
    ```
 
-4. **Monitore o espaço disponível**
+5. **Monitore o espaço disponível**
    - NVS tem ~24KB total
    - Cada namespace usa parte desse espaço
 
-5. **Para dados críticos, considere verificação**
+6. **Para dados críticos, considere verificação**
    ```c
    if (flash_buffer_write(buffer, &sample) != ESP_OK) {
        ESP_LOGE(TAG, "Falha ao salvar!");
@@ -302,8 +369,37 @@ if (ret != ESP_OK) {
 - [ESP-IDF NVS Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/nvs_flash.html)
 - [ESP32 Flash Memory Layout](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/partition-tables.html)
 
+## API Reference
+
+### Funções Principais
+
+```c
+// Sistema
+esp_err_t flash_buffer_system_init(void);
+
+// Inicialização
+flash_buffer_t* flash_buffer_init(const char* namespace, size_t sample_size, uint32_t max_samples);
+void flash_buffer_deinit(flash_buffer_t* buffer);
+
+// Escrita
+esp_err_t flash_buffer_write(flash_buffer_t* buffer, const void* sample);
+
+// Leitura
+uint32_t flash_buffer_read(flash_buffer_t* buffer, void* samples, uint32_t count);
+bool flash_buffer_read_last(flash_buffer_t* buffer, void* sample);
+esp_err_t flash_buffer_read_in_chunks(flash_buffer_t* buffer,  process_flash_chunk_callback_t callback, uint32_t chunk_size);
+
+// Estado
+uint32_t flash_buffer_get_count(const flash_buffer_t* buffer);
+bool flash_buffer_is_full(const flash_buffer_t* buffer);
+esp_err_t flash_buffer_clear(flash_buffer_t* buffer);
+
+// Global (opcional)
+void flash_buffer_set_global(flash_buffer_t* buffer);
+flash_buffer_t* flash_buffer_get_global(void);
+```
+
 ---
 
-**Última atualização**: Dezembro 2025 (v1.1)  
-**Correções**: Problema de dados corrompidos resolvido  
+**Última atualização**: Dezembro 2025 (v1.2)
 **Compatibilidade**: ESP-IDF 5.5.0+

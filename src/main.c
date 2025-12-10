@@ -9,7 +9,10 @@
 #include "sensor_monitor.h"
 #include "sensor_history.h"
 #include "flash_buffer.h"
-#include "button_driver.h" 
+#include "flash_record.h"
+#include "esp_timer.h"
+#include "button_driver.h"
+#include "uart_json_handler.h" 
 
 #define MIC_ADC_PIN 33
 #define MIC_ADC_CHANEL ADC_CHANNEL_5
@@ -19,9 +22,7 @@
 #define DHT11_PIN 23
 #define BUTTON_PIN 22
 
-#define DHT11_READ_INTERVAL_MS 5000
-#define BH1750_READ_INTERVAL_MS 10000
-#define DHT11_READ_INTERVAL_MS 5000
+#define DHT11_READ_INTERVAL_MS 2000
 #define BH1750_READ_INTERVAL_MS 10000
 #define KY037_READ_INTERVAL_MS 1000
 
@@ -30,7 +31,14 @@
 #define EVT_BTN_LONG     0x02
 
 flash_buffer_t *buffer = NULL;
-full_sensor_read_t current_read = {0};
+
+// Inicia a struct com valores minimos para evitar erro no calculo de média móvel
+full_sensor_read_t current_read = {
+    .temperature = -50.0f, 
+    .humidity = 20.0f,     
+    .lux = 0.0f,
+    .noise_level = 0
+};
 
 // Sistema de botões com notificação assíncrona
 TaskHandle_t xMainTaskHandle = NULL;
@@ -58,21 +66,24 @@ void app_main(void)
         return;
     }
 
-    buffer = flash_buffer_init("sensors", sizeof(compact_sensor_read_t), 1440);
+    // Cria buffer (1440 amostras = 24h com 1 amostra por minuto)
+    buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 1440);
     if (!buffer) {
         ESP_LOGE("main", "Falha ao criar buffer");
         return;
     }
+    
+    // Inicializa sistema de histórico em RAM
     init_history_system(60); 
 
     // Inicializa botão com interrupção GPIO e callback assíncrono
     button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, button_callback, xMainTaskHandle);
 
     // Teste: aguarda 5s por evento do botão, se detectar faz reboot
-    if (xTaskNotifyWait(0, 0xFFFFFFFF, &btn_notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
+    if (xTaskNotifyWait(0, UINT32_MAX, &btn_notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
         
         if (btn_notification_value & EVT_BTN_LONG) {
-            ESP_LOGI("BUTTON_TEST", ">>> EVENTO DETECTADO: Long Press <<<");
+            uart_json_dump_flash_and_restart(buffer);
         }
         
         if (btn_notification_value & EVT_BTN_CLICKED) {
@@ -153,7 +164,11 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
                  RAW_TO_HUMID(compact_read.humidity),
                  RAW_TO_LUX(compact_read.lux),
                  RAW_TO_NOISE(compact_read.noise_level));
-        flash_buffer_write(buffer, &compact_read);
+        // Monta registro com timestamp e grava na flash
+        flash_record_t frec = {0};
+        frec.timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+        frec.compact = compact_read;
+        flash_buffer_write(buffer, &frec);
     }
 }
 
