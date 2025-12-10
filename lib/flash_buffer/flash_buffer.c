@@ -261,3 +261,88 @@ void flash_buffer_deinit(flash_buffer_t *buffer)
         free(buffer);
     }
 }
+
+esp_err_t flash_buffer_read_in_chunks(flash_buffer_t* buffer, process_flash_chunk_callback_t process_chunk_callback, uint32_t chunk_size)
+{
+    if (!buffer || !process_chunk_callback || chunk_size == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (buffer->sample_count == 0)
+    {
+        ESP_LOGI(TAG, "Buffer vazio, nada para processar");
+        return ESP_OK;
+    }
+
+    // Aloca memória para o chunk
+    void* chunk = malloc(chunk_size * buffer->sample_size);
+    if (!chunk)
+    {
+        ESP_LOGE(TAG, "Falha ao alocar memória para chunk");
+        return ESP_ERR_NO_MEM;
+    }
+
+    uint32_t remaining = buffer->sample_count;
+    uint32_t offset = 0;
+    esp_err_t ret = ESP_OK;
+
+    while (remaining > 0)
+    {
+        uint32_t to_read = (remaining < chunk_size) ? remaining : chunk_size;
+        
+        // Lê chunk começando do índice mais antigo
+        uint32_t read_count = 0;
+        uint8_t* sample_ptr = (uint8_t*)chunk;
+
+        for (uint32_t i = 0; i < to_read; i++)
+        {
+            // Calcula índice da amostra mais antiga para a mais recente
+            uint32_t idx;
+            if (buffer->sample_count < buffer->max_samples)
+            {
+                // Buffer não está cheio ainda
+                idx = offset + i;
+            }
+            else
+            {
+                // Buffer cheio, circular a partir de write_index
+                idx = (buffer->write_index + offset + i) % buffer->max_samples;
+            }
+
+            char key[16];
+            snprintf(key, sizeof(key), KEY_SAMPLE_FMT, idx);
+
+            size_t size = buffer->sample_size;
+            void* dest = sample_ptr + (read_count * buffer->sample_size);
+            memset(dest, 0, buffer->sample_size);
+
+            esp_err_t err = nvs_get_blob(buffer->nvs_handle, key, dest, &size);
+            if (err == ESP_OK && size == buffer->sample_size)
+            {
+                read_count++;
+            }
+            else if (err != ESP_ERR_NVS_NOT_FOUND)
+            {
+                ESP_LOGW(TAG, "Erro ao ler amostra idx=%lu: %s", idx, esp_err_to_name(err));
+            }
+        }
+
+        // Processa o chunk lido
+        if (read_count > 0)
+        {
+            ret = process_chunk_callback(chunk, read_count);
+            if (ret != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Erro no callback de processamento: %s", esp_err_to_name(ret));
+                break;
+            }
+        }
+
+        remaining -= to_read;
+        offset += to_read;
+    }
+
+    free(chunk);
+    return ret;
+}

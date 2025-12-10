@@ -57,6 +57,8 @@ typedef struct {
     size_t sample_size;          // Tamanho de cada amostra
 } flash_buffer_t;
 
+typedef esp_err_t (*process_flash_chunk_callback_t)(const void* samples, uint32_t count);
+
 /**
  * @brief Inicializa o sistema NVS (chame uma vez no início)
  * @return ESP_OK se sucesso
@@ -130,4 +132,12 @@ void flash_buffer_deinit(flash_buffer_t* buffer);
 void flash_buffer_set_global(flash_buffer_t* buffer);
 flash_buffer_t* flash_buffer_get_global(void);
 
+/**
+ * @brief Lê todo o conteúdo do buffer em chunks
+ * @param buffer Ponteiro para o buffer
+ * @param process_chunk Função callback para processar cada chunk lido
+ * @param chunk_size Tamanho do chunk em número de amostras
+ * @return ESP_OK se sucesso
+ */
+esp_err_t flash_buffer_read_in_chunks(flash_buffer_t* buffer, process_flash_chunk_callback_t process_chunk_callback, uint32_t chunk_size);
 #endif // SENSOR_FLASH_BUFFER_H
