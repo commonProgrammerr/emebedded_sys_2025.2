@@ -8,6 +8,8 @@
 #include "sensor_monitor.h"
 #include "sensor_history.h"
 #include "flash_buffer.h"
+#include "flash_record.h"
+#include "esp_timer.h"
 
 #define MIC_ADC_PIN 33
 #define MIC_ADC_CHANEL ADC_CHANNEL_5
@@ -39,11 +41,14 @@ void app_main(void)
     }
 
     // Cria buffer (1440 amostras = 24h com 1 amostra por minuto)
-    buffer = flash_buffer_init("sensors", sizeof(compact_sensor_read_t), 1440);
+    // Agora armazenamos um record que inclui timestamp + leitura compacta
+    buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 1440);
     if (!buffer) {
         ESP_LOGE("main", "Falha ao criar buffer");
         return;
     }
+    // Torna o buffer acessível globalmente para outras partes do firmware
+    flash_buffer_set_global(buffer);
 
 
     // Histórico de 60 registros (1 amostra por segundo)
@@ -135,6 +140,10 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
                  RAW_TO_HUMID(compact_read.humidity),
                  RAW_TO_LUX(compact_read.lux),
                  RAW_TO_NOISE(compact_read.noise_level));
-        flash_buffer_write(buffer, &compact_read); // save to flash buffer
+        // Monta registro com timestamp e grava na flash
+        flash_record_t frec = {0};
+        frec.timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+        frec.compact = compact_read;
+        flash_buffer_write(buffer, &frec);
     }
 }

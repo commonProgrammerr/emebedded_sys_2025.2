@@ -123,4 +123,11 @@ esp_err_t flash_buffer_clear(flash_buffer_t* buffer);
  */
 void flash_buffer_deinit(flash_buffer_t* buffer);
 
+/* Convenience global accessors (optional):
+ * The module can store a global buffer pointer to be used by other modules
+ * that need to access the same flash buffer without carrying the pointer.
+ */
+void flash_buffer_set_global(flash_buffer_t* buffer);
+flash_buffer_t* flash_buffer_get_global(void);
+
 #endif // SENSOR_FLASH_BUFFER_H
