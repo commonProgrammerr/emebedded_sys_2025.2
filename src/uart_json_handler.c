@@ -357,15 +357,14 @@ void uart_interrupt_handler(void) {
  * @brief Lê todo o conteúdo do buffer de flash, envia via UART em JSON,
  *        limpa os históricos (RAM e flash) e reinicia o dispositivo.
  */
-uart_json_status_t uart_json_dump_flash_and_restart(void)
+uart_json_status_t uart_json_dump_flash_and_restart(flash_buffer_t *buffer)
 {
-    flash_buffer_t *fb = flash_buffer_get_global();
-    if (!fb) {
-        ESP_LOGE(TAG, "Flash buffer global não inicializado");
+    if (!buffer) {
+        ESP_LOGE(TAG, "Flash buffer não inicializado");
         return UART_JSON_ERROR;
     }
 
-    uint32_t count = flash_buffer_get_count(fb);
+    uint32_t count = flash_buffer_get_count(buffer);
     if (count == 0) {
         ESP_LOGI(TAG, "Nenhuma amostra na flash para dump");
         return UART_JSON_OK;
@@ -378,7 +377,7 @@ uart_json_status_t uart_json_dump_flash_and_restart(void)
         return UART_JSON_ERROR;
     }
 
-    uint32_t read = flash_buffer_read(fb, records, count);
+    uint32_t read = flash_buffer_read(buffer, records, count);
     if (read == 0) {
         ESP_LOGW(TAG, "Nenhuma amostra lida da flash (count=%d)", count);
         free(records);
@@ -417,7 +416,7 @@ uart_json_status_t uart_json_dump_flash_and_restart(void)
     // Limpa histórico em RAM
     init_history_system(60);
     // Limpa flash
-    esp_err_t err = flash_buffer_clear(fb);
+    esp_err_t err = flash_buffer_clear(buffer);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Falha ao limpar flash buffer: %s", esp_err_to_name(err));
     }

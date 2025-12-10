@@ -11,7 +11,8 @@
 #include "flash_buffer.h"
 #include "flash_record.h"
 #include "esp_timer.h"
-#include "button_driver.h" 
+#include "button_driver.h"
+#include "uart_json_handler.h" 
 
 #define MIC_ADC_PIN 33
 #define MIC_ADC_CHANEL ADC_CHANNEL_5
@@ -75,10 +76,10 @@ void app_main(void)
     button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, button_callback, xMainTaskHandle);
 
     // Teste: aguarda 5s por evento do botão, se detectar faz reboot
-    if (xTaskNotifyWait(0, 0xFFFFFFFF, &btn_notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
+    if (xTaskNotifyWait(0, UINT32_MAX, &btn_notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
         
         if (btn_notification_value & EVT_BTN_LONG) {
-            ESP_LOGI("BUTTON_TEST", ">>> EVENTO DETECTADO: Long Press <<<");
+            uart_json_dump_flash_and_restart(buffer);
         }
         
         if (btn_notification_value & EVT_BTN_CLICKED) {
