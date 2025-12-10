@@ -99,11 +99,11 @@ void app_main(void)
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
     bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
-    dht11_init(&dht11, DHT11_PIN, 5000); 
+    dht11_init(&dht11, DHT11_PIN); 
     KY037_init(&ky_037, MIC_ADC_CHANEL);
 
     sensor_monitor_t *th_monitor = new_sensor_monitor(
-        &dht11, DHT11_READ_INTERVAL_MS, sizeof(dht11_t), "temp&humidity_monitor", save_dht11);
+        &dht11, DHT11_READ_INTERVAL_MS, sizeof(dht11_context_t), "temp&humidity_monitor", save_dht11);
 
     sensor_monitor_t *noise_monitor = new_sensor_monitor(
         &ky_037, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_ky037);
@@ -136,7 +136,7 @@ void app_main(void)
 
 void save_dht11(sensor_base_t *sensor, void *data)
 {
-    dht11_t *dht_data = (dht11_t *)data;
+    dht11_context_t *dht_data = (dht11_context_t *)data;
     current_read.temperature = dht_data->temperature;
     current_read.humidity = dht_data->humidity;
     save_sensor_read(&current_read);   
