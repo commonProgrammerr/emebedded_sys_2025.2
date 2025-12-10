@@ -15,6 +15,8 @@ static const char *TAG = "flash_buffer";
 #define KEY_COUNT "count"
 #define KEY_SAMPLE_FMT "s_%lx" // Formato para chave de amostra
 
+static size_t available_flash_size = 24 * 1024; // 24KB disponíveis para dados
+
 esp_err_t flash_buffer_system_init(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -53,11 +55,13 @@ flash_buffer_t* flash_buffer_get_global(void)
 
 flash_buffer_t *flash_buffer_init(const char *namespace, size_t sample_size, uint32_t max_samples)
 {
-    if (!namespace || max_samples == 0 || (max_samples*sample_size) > (16 * 1024))
+    if (!namespace || max_samples == 0 || (max_samples*sample_size) > available_flash_size)
     {
         ESP_LOGE(TAG, "Parâmetros inválidos");
         return NULL;
     }
+    
+    available_flash_size -= (max_samples * sample_size);
 
     flash_buffer_t *buffer = calloc(1, sizeof(flash_buffer_t));
     if (!buffer)

@@ -22,9 +22,7 @@
 #define DHT11_PIN 23
 #define BUTTON_PIN 22
 
-#define DHT11_READ_INTERVAL_MS 5000
-#define BH1750_READ_INTERVAL_MS 10000
-#define DHT11_READ_INTERVAL_MS 5000
+#define DHT11_READ_INTERVAL_MS 2000
 #define BH1750_READ_INTERVAL_MS 10000
 #define KY037_READ_INTERVAL_MS 1000
 
@@ -33,7 +31,14 @@
 #define EVT_BTN_LONG     0x02
 
 flash_buffer_t *buffer = NULL;
-full_sensor_read_t current_read = {0};
+
+// Inicia a struct com valores minimos para evitar erro no calculo de média móvel
+full_sensor_read_t current_read = {
+    .temperature = -50.0f, 
+    .humidity = 20.0f,     
+    .lux = 0.0f,
+    .noise_level = 0
+};
 
 // Sistema de botões com notificação assíncrona
 TaskHandle_t xMainTaskHandle = NULL;
@@ -67,9 +72,8 @@ void app_main(void)
         ESP_LOGE("main", "Falha ao criar buffer");
         return;
     }
-    // Torna o buffer acessível globalmente para outras partes do firmware
-    flash_buffer_set_global(buffer);
-  
+    
+    // Inicializa sistema de histórico em RAM
     init_history_system(60); 
 
     // Inicializa botão com interrupção GPIO e callback assíncrono
