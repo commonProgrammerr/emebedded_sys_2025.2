@@ -4,24 +4,24 @@
 #include <stdlib.h>
 
 // Conversion macros
-#define TEMP_TO_RAW(temp) ((int16_t)((temp) * 100.0f))
-#define RAW_TO_TEMP(raw) ((float)(raw) / 100.0f)
+#define TEMP_TO_RAW(temp) ((int16_t)(temp))
+#define RAW_TO_TEMP(raw) ((float)(raw))
 
-#define HUMID_TO_RAW(humid) ((uint16_t)((humid) - 20.0f))
-#define RAW_TO_HUMID(raw) ((float)(raw) + 20.0f)
+#define HUMID_TO_RAW(humid) ((uint16_t)((humid)))
+#define RAW_TO_HUMID(raw) ((float)(raw))
 
-#define LUX_TO_RAW(lux) ((uint16_t)((lux) * 10.0f))
-#define RAW_TO_LUX(raw) ((float)(raw) / 10.0f)
+#define LUX_TO_RAW(lux) ((uint16_t)(lux) * 2.0f)
+#define RAW_TO_LUX(raw) ((float)(raw) / 2.0f)
 
-#define NOISE_TO_RAW(noise) ((uint16_t)((noise) / 5))
-#define RAW_TO_NOISE(raw) ((float)(raw) * 5)
+#define NOISE_TO_RAW(noise) (((uint16_t)(noise)) >> 1)
+#define RAW_TO_NOISE(raw) (((uint16_t)(raw)) << 1)
 
 // Compact data structure using bit-fields (5 bytes total)
 typedef struct compact_sensor_read {
-    int16_t temperature : 9;   // -50 to 50, step 0.01 -> range -5000 to 5000 (needs 9 bits signed)
-    uint16_t humidity : 7;     // 20 to 90, step 1.0 -> range 70 values (needs 7 bits)
-    uint16_t lux : 14;         // 0 to 1024, step 0.1 -> range 10240 values (needs 14 bits)
-    uint16_t noise_level : 10; // 0 to 4098, step 5.0 -> range ~820 values (needs 10 bits)
+    uint8_t temperature : 6;   // 0 to 50,    step 1.0   -> range 50 values (needs 6 bits)
+    uint8_t humidity : 7;      // 0 to 100,   step 1.0   -> range 75 values (needs 7 bits)
+    uint16_t lux : 15;         // 0 to 16384, step 0.5   -> range 32768 values (needs 14 bits)
+    uint16_t noise_level : 12; // 0 to 4096,  step 2.0   -> range 2048 values (needs 12 bits)
 } compact_sensor_read_t;
 
 typedef struct full_sensor_read {
