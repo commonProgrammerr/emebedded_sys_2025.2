@@ -34,7 +34,7 @@ flash_buffer_t *buffer = NULL;
 
 // Inicia a struct com valores minimos para evitar erro no calculo de média móvel
 full_sensor_read_t current_read = {
-    .temperature = -50.0f, 
+    .temperature = 0.0f, 
     .humidity = 20.0f,     
     .lux = 0.0f,
     .noise_level = 0
@@ -111,10 +111,6 @@ void app_main(void)
     sensor_monitor_t *light_monitor = new_sensor_monitor(
         &bh1750, BH1750_READ_INTERVAL_MS, sizeof(float), "light_monitor", save_bh1750);
 
-    if (th_monitor) start_sensor_monitoring(th_monitor);
-    if (noise_monitor) start_sensor_monitoring(noise_monitor);
-    if (light_monitor) start_sensor_monitoring(light_monitor);
-    
     ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
     if (th_monitor) start_sensor_monitoring(th_monitor);
     if (noise_monitor) start_sensor_monitoring(noise_monitor);
