@@ -34,7 +34,7 @@ flash_buffer_t *buffer = NULL;
 
 // Inicia a struct com valores minimos para evitar erro no calculo de média móvel
 full_sensor_read_t current_read = {
-    .temperature = -50.0f, 
+    .temperature = 0.0f, 
     .humidity = 20.0f,     
     .lux = 0.0f,
     .noise_level = 0
@@ -99,11 +99,11 @@ void app_main(void)
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
     bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
-    dht11_init(&dht11, DHT11_PIN, 5000); 
+    dht11_init(&dht11, DHT11_PIN); 
     KY037_init(&ky_037, MIC_ADC_CHANEL);
 
     sensor_monitor_t *th_monitor = new_sensor_monitor(
-        &dht11, DHT11_READ_INTERVAL_MS, sizeof(dht11_t), "temp&humidity_monitor", save_dht11);
+        &dht11, DHT11_READ_INTERVAL_MS, sizeof(dht11_context_t), "temp&humidity_monitor", save_dht11);
 
     sensor_monitor_t *noise_monitor = new_sensor_monitor(
         &ky_037, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_ky037);
@@ -111,10 +111,6 @@ void app_main(void)
     sensor_monitor_t *light_monitor = new_sensor_monitor(
         &bh1750, BH1750_READ_INTERVAL_MS, sizeof(float), "light_monitor", save_bh1750);
 
-    if (th_monitor) start_sensor_monitoring(th_monitor);
-    if (noise_monitor) start_sensor_monitoring(noise_monitor);
-    if (light_monitor) start_sensor_monitoring(light_monitor);
-    
     ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
     if (th_monitor) start_sensor_monitoring(th_monitor);
     if (noise_monitor) start_sensor_monitoring(noise_monitor);
@@ -136,7 +132,7 @@ void app_main(void)
 
 void save_dht11(sensor_base_t *sensor, void *data)
 {
-    dht11_t *dht_data = (dht11_t *)data;
+    dht11_context_t *dht_data = (dht11_context_t *)data;
     current_read.temperature = dht_data->temperature;
     current_read.humidity = dht_data->humidity;
     save_sensor_read(&current_read);   
