@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "button_driver.h"
 #include "uart_json_handler.h" 
+#include "time_sync.h"
 
 #define MIC_ADC_PIN 33
 #define MIC_ADC_CHANEL ADC_CHANNEL_5
@@ -72,9 +73,6 @@ void app_main(void)
         ESP_LOGE("main", "Falha ao criar buffer");
         return;
     }
-    
-    // Inicializa sistema de histórico em RAM
-    init_history_system(60); 
 
     // Inicializa botão com interrupção GPIO e callback assíncrono
     button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, button_callback, xMainTaskHandle);
@@ -95,6 +93,13 @@ void app_main(void)
         ESP_LOGW("BUTTON_TEST", "REBOOTING NOW!");
         esp_restart();
     }
+
+    // Inicializa sistema de histórico em RAM
+    init_history_system(60); 
+
+    // Sincroniza hora com NTP via WiFi
+    ret = sync_time_with_ntp("90225", "Segred0%%@2444", NULL, NULL);
+    ESP_ERROR_CHECK(ret);
 
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
@@ -162,7 +167,9 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
                  RAW_TO_NOISE(compact_read.noise_level));
         // Monta registro com timestamp e grava na flash
         flash_record_t frec = {0};
-        frec.timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+        time_t now;
+        time(&now);
+        frec.timestamp = (uint32_t)now; 
         frec.compact = compact_read;
         flash_buffer_write(buffer, &frec);
     }
