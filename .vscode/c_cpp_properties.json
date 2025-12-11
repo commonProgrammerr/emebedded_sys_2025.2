@@ -10,10 +10,6 @@
             "includePath": [
                 "/Users/andre.escorel/emebedded_sys_2025.2/include",
                 "/Users/andre.escorel/emebedded_sys_2025.2/src",
-                "/Users/andre.escorel/emebedded_sys_2025.2/lib/flash_buffer",
-                "/Users/andre.escorel/emebedded_sys_2025.2/lib/bh1750",
-                "/Users/andre.escorel/emebedded_sys_2025.2/.pio/libdeps/upesy_wroom/esp32-dht11/include",
-                "/Users/andre.escorel/emebedded_sys_2025.2/.pio/libdeps/upesy_wroom/esp32-dht11",
                 "/Users/andre.escorel/.platformio/packages/framework-espidf/components/xtensa/esp32/include",
                 "/Users/andre.escorel/.platformio/packages/framework-espidf/components/xtensa/include",
                 "/Users/andre.escorel/.platformio/packages/framework-espidf/components/xtensa/deprecated_include",
@@ -181,6 +177,10 @@
                 "/Users/andre.escorel/.platformio/packages/framework-espidf/components/rt/include",
                 "/Users/andre.escorel/.platformio/packages/framework-espidf/components/spiffs/include",
                 "/Users/andre.escorel/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
+                "/Users/andre.escorel/emebedded_sys_2025.2/components/esp_idf_lib_helpers",
+                "/Users/andre.escorel/emebedded_sys_2025.2/components/dht",
+                "/Users/andre.escorel/emebedded_sys_2025.2/lib/bh1750",
+                "/Users/andre.escorel/emebedded_sys_2025.2/lib/flash_buffer",
                 ""
             ],
             "browse": {
@@ -188,10 +188,6 @@
                 "path": [
                     "/Users/andre.escorel/emebedded_sys_2025.2/include",
                     "/Users/andre.escorel/emebedded_sys_2025.2/src",
-                    "/Users/andre.escorel/emebedded_sys_2025.2/lib/flash_buffer",
-                    "/Users/andre.escorel/emebedded_sys_2025.2/lib/bh1750",
-                    "/Users/andre.escorel/emebedded_sys_2025.2/.pio/libdeps/upesy_wroom/esp32-dht11/include",
-                    "/Users/andre.escorel/emebedded_sys_2025.2/.pio/libdeps/upesy_wroom/esp32-dht11",
                     "/Users/andre.escorel/.platformio/packages/framework-espidf/components/xtensa/esp32/include",
                     "/Users/andre.escorel/.platformio/packages/framework-espidf/components/xtensa/include",
                     "/Users/andre.escorel/.platformio/packages/framework-espidf/components/xtensa/deprecated_include",
@@ -359,6 +355,10 @@
                     "/Users/andre.escorel/.platformio/packages/framework-espidf/components/rt/include",
                     "/Users/andre.escorel/.platformio/packages/framework-espidf/components/spiffs/include",
                     "/Users/andre.escorel/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
+                    "/Users/andre.escorel/emebedded_sys_2025.2/components/esp_idf_lib_helpers",
+                    "/Users/andre.escorel/emebedded_sys_2025.2/components/dht",
+                    "/Users/andre.escorel/emebedded_sys_2025.2/lib/bh1750",
+                    "/Users/andre.escorel/emebedded_sys_2025.2/lib/flash_buffer",
                     ""
                 ]
             },

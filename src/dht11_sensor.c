@@ -2,11 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
-#include "driver/gpio.h"
 
 static const char *TAG = "DHT11";
 
-SensorStatus_t dht11_init(sensor_base_t *self, uint8_t pin, uint32_t timeout)
+SensorStatus_t dht11_init(sensor_base_t *self, uint8_t pin)
 {
     if (self == NULL)
         ESP_LOGE(TAG, "Invalid address for sensor");
@@ -21,19 +20,10 @@ SensorStatus_t dht11_init(sensor_base_t *self, uint8_t pin, uint32_t timeout)
         return SENSOR_ERROR;
     }
 
-    ((dht11_context_t *)self->context)->sensor.dht11_pin = pin;
-    ((dht11_context_t *)self->context)->timeout = timeout;
-
-    // Configurar GPIO com pull-up interno
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << pin),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&io_conf);
-
+    ((dht11_context_t *)self->context)->pin = pin;
+    ((dht11_context_t *)self->context)->humidity = 0.0f;
+    ((dht11_context_t *)self->context)->temperature = 0.0f;
+    
     self->read_data = dht11_read_data;
     self->deinit = dht11_deinit;
 
@@ -49,16 +39,16 @@ SensorStatus_t dht11_read_data(sensor_base_t *self, void *data)
         return SENSOR_ERROR;
     }
     dht11_context_t *context = (dht11_context_t *)self->context;
-    dht11_t *sensor_data = (dht11_t *)data;
-    context->sensor.dht11_pin = GPIO_NUM_23;
-    if (!dht11_read(&(context->sensor), context->timeout))
+    esp_err_t ret;
+    ret = dht_read_float_data(DHT_TYPE_DHT11, context->pin, &context->humidity, &context->temperature);
+    if (ret == ESP_OK)
     {
-        memcpy(sensor_data, &context->sensor, sizeof(dht11_t));
-        ESP_LOGI(TAG, "Temperature: %.2f°C, Humidity: %.2f%%", context->sensor.temperature, context->sensor.humidity);
+        memcpy(data, context, sizeof(dht11_context_t));
+        ESP_LOGI(TAG, "Temperature: %.2f°C, Humidity: %.2f%%", context->temperature, context->humidity);
     }
     else
     {
-        ESP_LOGE(TAG, "Failed to read DHT11 sensor data");
+        ESP_LOGE(TAG, "Failed to read DHT11 data: %s", esp_err_to_name(ret));
         return SENSOR_ERROR;
     }
 
