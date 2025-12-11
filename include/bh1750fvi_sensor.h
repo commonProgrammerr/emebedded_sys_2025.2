@@ -6,18 +6,6 @@
 // Use bh1750 lib for implementation
 #include "bh1750.h"
 
-#if defined(CONFIG_IDF_TARGET_ESP32S2)
-
-#define SCL_IO 20 // GPIO number for I2C master clock
-#define SDA_IO 21 // GPIO number for I2C master data
-
-#elif defined(CONFIG_IDF_TARGET_ESP32)
-
-#define SDA_IO GPIO_NUM_21
-#define SCL_IO GPIO_NUM_19
-
-#endif
-
 typedef struct bh1750fvi_context
 {
     i2c_master_bus_config_t i2c_bus_config;

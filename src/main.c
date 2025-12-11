@@ -15,18 +15,7 @@
 #include "uart_json_handler.h" 
 #include "time_sync.h"
 #include "alerts.h"
-
-#define MIC_ADC_PIN 33
-#define MIC_ADC_CHANEL ADC_CHANNEL_5
-#define SPEAKER_PIN 34
-#define RED_LED_PIN 26
-#define YELLOW_LED_PIN 32
-#define DHT11_PIN 23
-#define BUTTON_PIN 22
-
-#define DHT11_READ_INTERVAL_MS 2000
-#define BH1750_READ_INTERVAL_MS 10000
-#define KY037_READ_INTERVAL_MS 1000
+#include "env.h"
 
 // Bits para eventos do botão via xTaskNotify
 #define EVT_BTN_CLICKED  0x01

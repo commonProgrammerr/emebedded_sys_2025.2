@@ -3,6 +3,7 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_timer.h"
+#include "env.h"
 
 static const char *TAG = "ALERTS_CORE";
 
@@ -22,33 +23,22 @@ static SensorStatus_t st_dht = STATUS_OK;
 static SensorStatus_t st_light = STATUS_OK;
 static SensorStatus_t st_noise = STATUS_OK;
 
-// --- Buffers para Médias Móveis e Contadores ---
-// Supondo: DHT a cada 10s, Luz a cada 10s, Ruído a cada 1s
 
-#define DHT_WINDOW 6 // 1 min (6 * 10s)
 static float dht_temp_buf[DHT_WINDOW] = {0};
 static float dht_hum_buf[DHT_WINDOW] = {0};
 static int dht_idx = 0;
 static int dht_count = 0;
 static int dht_violation_counter = 0; // Para regra de >= 3 leituras
 
-#define LIGHT_WINDOW 12 // 2 min (12 * 10s) para checar vazamento
 static int light_violation_counter = 0; 
 
-#define NOISE_PEAK_DURATION 3 // 3 segundos
 static int noise_peak_counter = 0; 
 
-// --- Configuração Buzzer (LEDC) ---
-#define BUZZER_TIMER LEDC_TIMER_0
-#define BUZZER_CHANNEL LEDC_CHANNEL_0
-
 void init_actuators() {
-    gpio_reset_pin(PIN_LED_GREEN);
-    gpio_reset_pin(PIN_LED_YELLOW);
-    gpio_reset_pin(PIN_LED_RED);
-    gpio_set_direction(PIN_LED_GREEN, GPIO_MODE_OUTPUT);
-    gpio_set_direction(PIN_LED_YELLOW, GPIO_MODE_OUTPUT);
-    gpio_set_direction(PIN_LED_RED, GPIO_MODE_OUTPUT);
+    gpio_reset_pin(WARNING_STATE_GPIO);
+    gpio_reset_pin(CRITICAL_STATE_GPIO);
+    gpio_set_direction(WARNING_STATE_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_direction(CRITICAL_STATE_GPIO, GPIO_MODE_OUTPUT);
 
     // Config Buzzer PWM
     ledc_timer_config_t ledc_timer = {
@@ -64,7 +54,7 @@ void init_actuators() {
         .channel = BUZZER_CHANNEL,
         .timer_sel = BUZZER_TIMER,
         .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = PIN_BUZZER,
+        .gpio_num = BUZZER_GPIO,
         .duty = 0,
         .hpoint = 0
     };
@@ -164,9 +154,8 @@ void vTaskAlertActuators(void *pvParameters) {
             global_state = STATUS_ATTENTION;
 
         // Reset LEDs
-        gpio_set_level(PIN_LED_GREEN, 0);
-        gpio_set_level(PIN_LED_YELLOW, 0);
-        gpio_set_level(PIN_LED_RED, 0);
+        gpio_set_level(WARNING_STATE_GPIO, 0);
+        gpio_set_level(CRITICAL_STATE_GPIO, 0);
 
         // Lógica Snooze (Expira após 10 min)
         if (snooze_active && (esp_timer_get_time() - snooze_start_time > 600000000)) {
@@ -175,18 +164,19 @@ void vTaskAlertActuators(void *pvParameters) {
 
         switch (global_state) {
             case STATUS_OK:
-                gpio_set_level(PIN_LED_GREEN, 1);
+                gpio_set_level(WARNING_STATE_GPIO, 0);
+                gpio_set_level(CRITICAL_STATE_GPIO, 0);
                 set_buzzer(false);
                 break;
 
             case STATUS_ATTENTION:
                 // Pisca Amarelo
-                if ((tick % 10) < 5) gpio_set_level(PIN_LED_YELLOW, 1);
+                if ((tick % 10) < 5) gpio_set_level(WARNING_STATE_GPIO, 1);
                 set_buzzer(false);
                 break;
 
             case STATUS_ALARM:
-                gpio_set_level(PIN_LED_RED, 1);
+                gpio_set_level(CRITICAL_STATE_GPIO, 1);
                 
                 // Lógica Buzzer: Toque curto a cada 30s
                 // 30s = 300 ticks de 100ms. Toque curto = 5 ticks (0.5s)
