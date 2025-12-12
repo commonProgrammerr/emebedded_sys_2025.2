@@ -42,7 +42,7 @@ static void task_alert(void* args) {
                     if (abort == pdTRUE)
                         break;
                     
-                        abort = xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(30000));
+                    abort = xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(20000));
                     
                     if (abort == pdTRUE)
                         break;
@@ -63,7 +63,7 @@ static void task_alert(void* args) {
 }
 
 static void set_buzzer(bool on) {
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, BUZZER_CHANNEL, on ? 512 : 0);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, BUZZER_CHANNEL, on ? 1024 : 0);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, BUZZER_CHANNEL);
 }
 
@@ -78,8 +78,8 @@ esp_err_t alerts_init() {
     ledc_timer_config_t ledc_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .timer_num = BUZZER_TIMER,
-        .duty_resolution = LEDC_TIMER_10_BIT,
-        .freq_hz = 2000,
+        .duty_resolution = LEDC_TIMER_12_BIT,
+        .freq_hz = 800,
         .clk_cfg = LEDC_AUTO_CLK
     };
 
