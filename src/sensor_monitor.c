@@ -44,6 +44,14 @@ static void sensor_read_task(void *args)
             continue;
         }
 
+        // Validate sensor and read_data function pointer before calling
+        if (monitor->sensor == NULL || monitor->sensor->read_data == NULL) {
+            ESP_LOGE(SENSOR_MONITOR_TAG, "Sensor or read_data function is NULL for %s", monitor->sensor_name);
+            free(data);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
         // Executa a leitura do sensor usando a interface sensor_base
         SensorStatus_t status = monitor->sensor->read_data(monitor->sensor, data);
 

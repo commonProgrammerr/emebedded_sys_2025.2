@@ -24,7 +24,7 @@
 #define BUTTON_PIN 22
 
 // Alert System
-#define BUZZER_GPIO GPIO_NUM_34         // Buzzer Pin
+#define BUZZER_GPIO GPIO_NUM_15         // Buzzer Pin
 #define BUZZER_TIMER LEDC_TIMER_0       // PWM Timer for Buzzer
 #define BUZZER_CHANNEL LEDC_CHANNEL_0   // Buzzer
 #define CRITICAL_STATE_GPIO GPIO_NUM_26 // Red LED
