@@ -4,16 +4,18 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include <stdbool.h>
-#include <esp32-dht11.h> // Para o tipo dht11_t
 
-// --- Filas Globais (Separadas) ---
-extern QueueHandle_t xQueueDHT;   // Carrega dht11_t
-extern QueueHandle_t xQueueLight; // Carrega float
-extern QueueHandle_t xQueueNoise; // Carrega uint16_t (score)
+typedef enum {
+    ALERT_NONE = 0,
+    ALERT_WARNING,
+    ALERT_CRITICAL
+} alert_t;
 
-// --- Funções ---
-void alerts_init();
-void alerts_trigger_snooze(); // Chama quando apertar botão para silenciar
-void alerts_set_night_mode(bool is_night); // Define se é horário de escuro (fotoperíodo)
+extern alert_t alert_status;
+
+esp_err_t alerts_init();
+esp_err_t alerts_send_alert(alert_t type, const char* message);
+esp_err_t alerts_clear_alert();
+esp_err_t alerts_snooze(uint32_t duration_ms);
 
 #endif
