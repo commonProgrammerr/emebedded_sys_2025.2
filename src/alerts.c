@@ -1,140 +1,137 @@
 #include "alerts.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "esp_timer.h"
+#include "env.h"
 
-static const char *TAG = "ALERTS_LOGIC";
+static const char *TAG = "ALERT";
+static TaskHandle_t xAlertTaskHandle = NULL;
+static bool snooze_active = false;
+static const char* alerts_tags[3] = {"NONE", "WARNING", "CRITICAL"};
+static uint32_t current_snooze_duration = 0;
+alert_t alert_status;
 
-// Definição das filas
-QueueHandle_t xSensorQueue = NULL;
-QueueHandle_t xAlertQueue = NULL;
+static void set_buzzer(bool on);
+static void task_alert(void* args);
 
-void init_gpio() {
-    gpio_reset_pin(PIN_LED_GREEN);
-    gpio_reset_pin(PIN_LED_YELLOW);
-    gpio_reset_pin(PIN_LED_RED);
-    
-    gpio_set_direction(PIN_LED_GREEN, GPIO_MODE_OUTPUT);
-    gpio_set_direction(PIN_LED_YELLOW, GPIO_MODE_OUTPUT);
-    gpio_set_direction(PIN_LED_RED, GPIO_MODE_OUTPUT);
-}
-
-void init_buzzer() {
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode       = BUZZER_MODE,
-        .timer_num        = BUZZER_TIMER,
-        .duty_resolution  = BUZZER_RES,
-        .freq_hz          = BUZZER_FREQ,
-        .clk_cfg          = LEDC_AUTO_CLK
-    };
-    ledc_timer_config(&ledc_timer);
-
-    ledc_channel_config_t ledc_channel = {
-        .speed_mode     = BUZZER_MODE,
-        .channel        = BUZZER_CHANNEL,
-        .timer_sel      = BUZZER_TIMER,
-        .intr_type      = LEDC_INTR_DISABLE,
-        .gpio_num       = PIN_BUZZER,
-        .duty           = 0,
-        .hpoint         = 0
-    };
-    ledc_channel_config(&ledc_channel);
-}
-
-void set_buzzer_tone(int duty) {
-    ledc_set_duty(BUZZER_MODE, BUZZER_CHANNEL, duty);
-    ledc_update_duty(BUZZER_MODE, BUZZER_CHANNEL);
-}
-
-/**
- * @brief Lógica do sensor
- * Consome dados brutos da xSensorQueue -> Processa -> Envia estado para xAlertQueue
- */
-void vTaskSensorLogic(void *pvParameters) {
-    sensor_reading_t reading;
-    int violation_counter = 0;
-    
-    // Mantemos o estado localmente para lógica de histerese
-    system_state_t current_logic_state = STATE_NORMAL;
-
-    for (;;) {
-        // Bloqueia esperando dados do sensor (timeout infinito ou longo)
-        if (xQueueReceive(xSensorQueue, &reading, portMAX_DELAY) == pdTRUE) {
-            
-            float temp = reading.temperature;
-            float hum = reading.humidity;
-            
-            system_state_t new_calculated_state = STATE_NORMAL;
-
-            bool temp_critical = (temp < (TEMP_MIN - WARN_OFFSET_TEMP)) || (temp > (TEMP_MAX + WARN_OFFSET_TEMP));
-            bool hum_critical = (hum < (HUM_MIN - WARN_OFFSET_HUM)) || (hum > (HUM_MAX + WARN_OFFSET_HUM));
-            bool temp_warning = !temp_critical && ((temp < TEMP_MIN) || (temp > TEMP_MAX));
-            bool hum_warning = !hum_critical && ((hum < HUM_MIN) || (hum > HUM_MAX));
-
-            if (temp_critical || hum_critical) new_calculated_state = STATE_CRITICAL;
-            else if (temp_warning || hum_warning) new_calculated_state = STATE_WARNING;
-            else new_calculated_state = STATE_NORMAL;
-
-            // Lógica de Debounce/Contador de Violação
-            if (new_calculated_state != STATE_NORMAL) violation_counter++;
-            else violation_counter = 0;
-
-            // Só muda o estado se persistir por 3 leituras ou se voltar ao normal
-            if (violation_counter >= 3 || new_calculated_state == STATE_NORMAL) {
-                current_logic_state = new_calculated_state;
+static void task_alert(void* args) {
+    for(;;) {
+        if (xTaskNotifyWait(0, 0, NULL, portMAX_DELAY) == pdTRUE) {
+            switch (alert_status)
+            {
+            case ALERT_NONE:
+                gpio_set_level(WARNING_STATE_GPIO, 0);
+                gpio_set_level(CRITICAL_STATE_GPIO, 0);
+                set_buzzer(false);
+                break;
+            case ALERT_WARNING:
+                gpio_set_level(WARNING_STATE_GPIO, 1);
+                gpio_set_level(CRITICAL_STATE_GPIO, 0);
+                set_buzzer(false);
+                break;
+            case ALERT_CRITICAL:
+                gpio_set_level(WARNING_STATE_GPIO, 0);
+                gpio_set_level(CRITICAL_STATE_GPIO, 1);
+                while (alert_status == ALERT_CRITICAL)
+                {
+                    set_buzzer(true);
+                    BaseType_t abort = xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(500));
+                    set_buzzer(false);
+                    
+                    if (abort == pdTRUE)
+                        break;
+                    
+                        abort = xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(30000));
+                    
+                    if (abort == pdTRUE)
+                        break;
+                    
+                    if(snooze_active) {
+                        abort = xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(current_snooze_duration));
+                        current_snooze_duration = 0;
+                        if (abort == pdTRUE)
+                            break;
+                    }
+                }
+                break;
+            default:
+                break;
             }
-
-            ESP_LOGI(TAG, "Processado: T:%.1f H:%.1f | Estado: %d | Violacoes: %d", 
-                     temp, hum, current_logic_state, violation_counter);
-
-            // Envia o estado processado para a task de Alertas
-            // Usamos xQueueOverwrite para garantir que o alerta tenha sempre o estado mais recente
-            // (Requer fila de tamanho 1)
-            xQueueOverwrite(xAlertQueue, &current_logic_state);
         }
     }
 }
 
-/**
- * @brief Task de Controle de Atuadores
- * Lê o estado da xAlertQueue e controla LEDs/Buzzer
- */
-void vTaskAlerts(void *pvParameters) {
-    int toggle_counter = 0;
-    system_state_t active_state = STATE_NORMAL; // Estado local da task
+static void set_buzzer(bool on) {
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, BUZZER_CHANNEL, on ? 512 : 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, BUZZER_CHANNEL);
+}
 
-    for (;;) {
-        // Verifica se há um novo estado na fila. 
-        // Delay 0 = não bloqueia. Se não tiver nada, continua com o estado anterior.
-        system_state_t received_state;
-        if (xQueueReceive(xAlertQueue, &received_state, 0) == pdTRUE) {
-            active_state = received_state;
-            ESP_LOGD(TAG, "Estado atualizado nos alertas: %d", active_state);
-        }
 
-        // Reseta tudo antes de aplicar a lógica do ciclo atual
-        gpio_set_level(PIN_LED_GREEN, 0);
-        gpio_set_level(PIN_LED_YELLOW, 0);
-        gpio_set_level(PIN_LED_RED, 0);
-        set_buzzer_tone(0); 
+esp_err_t alerts_init() {
+    gpio_reset_pin(WARNING_STATE_GPIO);
+    gpio_reset_pin(CRITICAL_STATE_GPIO);
+    gpio_set_direction(WARNING_STATE_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_direction(CRITICAL_STATE_GPIO, GPIO_MODE_OUTPUT);
 
-        switch (active_state) {
-            case STATE_NORMAL:
-                gpio_set_level(PIN_LED_GREEN, 1);
-                break;
-                
-            case STATE_WARNING:
-                // Pisca Amarelo (Frequência média)
-                gpio_set_level(PIN_LED_YELLOW, (toggle_counter % 10) < 5); 
-                break;
-                
-            case STATE_CRITICAL:
-                // Pisca Vermelho rápido + Buzzer
-                bool state_on = (toggle_counter % 5) < 2; 
-                gpio_set_level(PIN_LED_RED, state_on);
-                if (state_on) set_buzzer_tone(4000); 
-                break;
-        }
+    // Config Buzzer PWM
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .timer_num = BUZZER_TIMER,
+        .duty_resolution = LEDC_TIMER_10_BIT,
+        .freq_hz = 2000,
+        .clk_cfg = LEDC_AUTO_CLK
+    };
 
-        toggle_counter++;
-        vTaskDelay(pdMS_TO_TICKS(100)); // Base de tempo da animação
+    ledc_timer_config(&ledc_timer);
+    ledc_channel_config_t ledc_channel = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = BUZZER_CHANNEL,
+        .timer_sel = BUZZER_TIMER,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = BUZZER_GPIO,
+        .duty = 0,
+        .hpoint = 0
+    };
+
+    ledc_channel_config(&ledc_channel);
+    alert_status = ALERT_NONE;
+
+    xTaskCreate(task_alert, "AlertWatchdog", 4096, NULL, 5, &xAlertTaskHandle);
+    return ESP_OK;
+}
+
+esp_err_t alerts_send_alert(alert_t type, const char* message) {
+    if (type == ALERT_NONE) {
+        return ESP_ERR_INVALID_ARG;
     }
+
+    alert_status = type;
+    ESP_LOGW(TAG, "Novo alerta (%s)  %s", alerts_tags[type], message);
+    if (xAlertTaskHandle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xTaskNotifyGive(xAlertTaskHandle);
+    return ESP_OK;
+}
+
+esp_err_t alerts_clear_alert() {
+    alert_status = ALERT_NONE;
+    snooze_active = false;
+    ESP_LOGI(TAG, "Alerta limpo");
+    if (xAlertTaskHandle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xTaskNotifyGive(xAlertTaskHandle);
+    return ESP_OK;
+}
+
+esp_err_t alerts_snooze(uint32_t duration_ms) {
+    if (alert_status != ALERT_CRITICAL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    snooze_active = true;
+    current_snooze_duration = duration_ms;
+    ESP_LOGI(TAG, "Alerta snoozed por %u ms", duration_ms);
+    return ESP_OK;
 }

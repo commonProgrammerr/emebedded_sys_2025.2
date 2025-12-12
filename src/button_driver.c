@@ -1,10 +1,7 @@
 #include "button_driver.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-
-#define DEBOUNCE_TIME_MS 50
-#define LONG_PRESS_MS 2000
-#define NORMAL_PRESS_MS 500
+#include "env.h"
 
 static const char *TAG = "BUTTON_DRV";
 static Button_t *btn_instance = NULL; // Para acessar na ISR
