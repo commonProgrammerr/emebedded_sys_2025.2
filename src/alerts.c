@@ -106,8 +106,13 @@ esp_err_t alerts_send_alert(alert_t type, const char* message) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    ESP_LOGW(TAG, "[%s] %s", alerts_tags[type], message);
+    
+    if (type <= alert_status) {
+        return ESP_OK; // Não rebaixar o nível de alerta
+    }
+    
     alert_status = type;
-    ESP_LOGW(TAG, "Novo alerta (%s)  %s", alerts_tags[type], message);
     if (xAlertTaskHandle == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
