@@ -98,18 +98,35 @@ void app_main(void)
 
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
-    bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
-    dht11_init(&dht11, DHT11_PIN); 
-    KY037_init(&ky_037, MIC_ADC_CHANEL);
+    SensorStatus_t bh1750_status = bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
+    SensorStatus_t dht11_status = dht11_init(&dht11, DHT11_PIN); 
+    SensorStatus_t ky037_status = KY037_init(&ky_037, MIC_ADC_CHANEL);
 
-    sensor_monitor_t *th_monitor = new_sensor_monitor(
+    sensor_monitor_t *th_monitor = NULL;
+    sensor_monitor_t *noise_monitor = NULL;
+    sensor_monitor_t *light_monitor = NULL;
+
+    // Only create monitors for sensors that initialized successfully
+    if (dht11_status == SENSOR_OK) {
+        th_monitor = new_sensor_monitor(
         &dht11, DHT11_READ_INTERVAL_MS, sizeof(dht11_context_t), "temp&humidity_monitor", save_dht11);
+    } else {
+        ESP_LOGW("main", "DHT11 initialization failed, skipping monitor creation");
+    }
 
-    sensor_monitor_t *noise_monitor = new_sensor_monitor(
+    if (ky037_status == SENSOR_OK) {
+        noise_monitor = new_sensor_monitor(
         &ky_037, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_ky037);
+    } else {
+        ESP_LOGW("main", "KY037 initialization failed, skipping monitor creation");
+    }
 
-    sensor_monitor_t *light_monitor = new_sensor_monitor(
+    if (bh1750_status == SENSOR_OK) {
+        light_monitor = new_sensor_monitor(
         &bh1750, BH1750_READ_INTERVAL_MS, sizeof(float), "light_monitor", save_bh1750);
+    } else {
+        ESP_LOGW("main", "BH1750 initialization failed, skipping monitor creation");
+    }
 
     ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
     if (th_monitor) start_sensor_monitoring(th_monitor);
