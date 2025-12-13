@@ -1,389 +1,734 @@
-# Sistema Embarcado - Projeto DAC/PWM com PCF8591
+# Sistema de Monitoramento Ambiental para Biotério (MVP)
 
-Este projeto implementa um sistema embarcado utilizando o microcontrolador STM32L476RG, integrando comunicação I2C com o módulo ADC/DAC PCF8591 e geração de sinais analógicos através de DAC e PWM. O sistema permite ler valores analógicos, controlar amplitudes de onda senoidal, e ajustar ciclos de trabalho PWM baseados em sensores, com alternância de modos através de botão físico.
+**Solução embarcada completa e integrada para monitoramento contínuo de condições ambientais em salas de criação de ratos**, com foco em parâmetros críticos para reprodução. O sistema monitora temperatura, umidade relativa, iluminação e ruído, com alertas em tempo real e histórico de dados persistente em flash.
 
-## Funcionalidades
+---
 
-### Comunicação e Protocolos
-- **Interface I2C**: Comunicação com módulo PCF8591 ADC/DAC usando DMA
-- **Interface UART**: Debug log via USART2 (não implementado por padrão)
+## Visão Geral das Funcionalidades
 
-### Processamento de Sinais
-- **Leitura de Canais Analógicos**: 2 canais ADC do PCF8591 (A0, A1, 8-bit, 0-255)
-- **Saída DAC**: Geração de onda senoidal com amplitude variável (12-bit, 0-4095)
-- **Saída PWM**: Controle de duty cycle baseado em sensor (TIM1 CH4)
-- **Controle de Amplitude**: Valor do sensor A1 controla amplitude da onda DAC
-- **Controle PWM**: Valor do sensor A0 controla duty cycle do PWM
+### Sensores Integrados
 
-### Alternância de Modos
-- **Modo 1**: PWM controlado por sensor A0 (padrão)
-- **Modo 2**: DAC com onda senoidal de amplitude controlada por A1
-- **Modo 3**: Ambos PWM e DAC ativos simultaneamente
-- **Botão B1**: Alterna entre os 3 modos de operação
-- **Operação Periódica**: Timer TIM2 dispara leituras automáticas dos sensores
+| Sensor | Parâmetro | Faixa-Alvo | Amostragem | Alerta |
+|--------|-----------|-----------|-----------|--------|
+| **DHT11/DHT22** | Temperatura | 22–26 °C | 2 s (média 1 min) | ≥ 3 leituras fora |
+| **DHT11/DHT22** | Umidade | 40–60 % | 2 s (média 1 min) | ≥ 3 leituras fora |
+| **BH1750FVI** | Iluminância (dia) | 150–300 lux | 10 s | > 5 min fora |
+| **BH1750FVI** | Luz noturna (vazamento) | ~0 lux (tol: ≤ 5 lux) | 10 s | > 2 min acima |
+| **KY-037 (LM393)** | Ruído (score 0–100) | Média < 40–50 | 1 s (RMS 1s) | Picos > 60 por > 3 s |
 
-## Controle e Operação
+### Atuadores de Alerta
 
-### Alternância de Modos (Botão B1)
-O sistema opera em 3 modos alternáveis através do botão B1:
+- **LED Amarelo (GPIO 32)**: Aviso – 1–5 min fora dos limites
+- **LED Vermelho (GPIO 26)**: Alarme – > 5 min fora ou múltiplas variáveis críticas
+- **Buzzer PWM (GPIO 15)**: Pulsos periódicos (atenção) ou contínuo (alarme); opção de snooze por 5 min
+- **Display OLED**: Exibição em tempo real de valores, status e tendências
 
-#### **Modo 1: PWM Controlado por Sensor** (Padrão)
-- PWM ativo no pino TIM1_CH4 (PA11)
-- Duty cycle controlado pelo valor do sensor A0 (0-255 → 0-100%)
-- DAC desabilitado
-- Leitura periódica automática via TIM2
+### Processamento de Dados
 
-#### **Modo 2: DAC com Onda Senoidal**
-- DAC ativo no pino PA5 gerando onda senoidal
-- Amplitude controlada pelo valor do sensor A1 (0-255 → 0-4095)
-- PWM desabilitado
-- 512 amostras por período de onda
-- Trigger via TIM4 para DAC DMA
+- **Armazenamento em Flash**: Buffer circular em NVS (24–48 h de histórico)
+- **Conformidade**: Cálculo automático de % de tempo dentro das faixas (meta: ≥ 85%)
+- **Média Móvel**: Suavização de 1 min com histerese de 3 leituras
+- **Interfaceamento UART/JSON**: Exportação de dados, configuração remota e sincronização de horário
+- **Máquina de Estados**: Transições automáticas: OK → Atenção → Alarme → OK
 
-#### **Modo 3: PWM + DAC Simultâneos**
-- PWM ativo (controlado por A0)
-- DAC ativo (amplitude controlada por A1)
-- Ambas as saídas operando simultaneamente
-
-### Operação Automática
-- **Timer TIM2**: Dispara leituras periódicas dos sensores quando em STATE_1
-- **DMA I2C**: Leituras e configurações assíncronas do PCF8591
-- **DMA DAC**: Geração contínua de onda senoidal no modo 2
-- **Proteção Atômica**: Variáveis compartilhadas protegidas com `ATOMIC_READ/WRITE`
+---
 
 ## Arquitetura do Sistema
 
-O sistema implementa uma **máquina de estados com 8 estados** para gerenciar a comunicação entre múltiplos periféricos e protocolos de forma eficiente e robusta.
+### Pilha Tecnológica
 
-### Diagrama Geral do Sistema
-![Diagrama de Estados do Sistema](docs/images/diagrama_de_estados.svg)
+- **Microcontrolador**: ESP32 / ESP32-S2 (32-bit dual-core, 240 MHz)
+- **RTOS**: FreeRTOS com Tasks, Software Timers e Queues
+- **Persistência**: NVS (Non-Volatile Storage) em flash
+- **Comunicação**: 
+  - I2C para BH1750 (sensor de luz)
+  - GPIO/Interrupts para DHT11 (temperatura/umidade)
+  - ADC para KY-037 (ruído)
+  - UART para JSON (debug e exportação)
+- **Periféricos**: LEDs (GPIO), Buzzer (PWM/LEDC), Botão (EXTI)
 
+### Diagrama Simplificado
 
-### Máquina de Estados (7 Estados):
-
-1. **STATE_1 (Idle)**: Estado inicial, aguarda eventos de timer ou botão
-2. **STATE_2 (Config ADC A0)**: Configura canal A0 do PCF8591 via I2C DMA
-3. **STATE_3 (Read ADC A0)**: Lê sensor A0 para controle PWM
-4. **STATE_4 (Update PWM)**: Atualiza duty cycle do PWM baseado em A0
-5. **STATE_5 (Config ADC A1)**: Configura canal A1 do PCF8591 via I2C DMA
-6. **STATE_6 (Read ADC A1)**: Lê sensor A1 para controle de amplitude DAC
-7. **STATE_7 (Update DAC)**: Recalcula e atualiza buffer de onda senoidal
-
-### Arquitetura Simplificada:
-
-O sistema foi refatorado para uma arquitetura simplificada e integrada:
-
-#### **PCF8591 I2C (inline em main.c)**
-- Comunicação I2C direta com HAL usando DMA
-- Estrutura `pcf8591_config_t` com bitfields para controle do chip
-- Funções: `PCF8591_set_channel_index()`, `PCF8591_read_analog_channel()`
-- Callbacks: `HAL_I2C_MasterTxCpltCallback()`, `HAL_I2C_MasterRxCpltCallback()`
-- Suporte para configuração de canais single-ended e differential
-
-#### **Geração de Onda Senoidal**
-- Buffer estático `sin_wave_buff[512]` com amostras da onda
-- Função `populate_sin_wave_buff(amplitude)` calcula valores usando `sin()` de `math.h`
-- DAC DMA transfere buffer continuamente
-- TIM4 dispara conversões DAC (TRGO)
-
-#### **Controle PWM**
-- TIM1 Channel 4 gera sinal PWM
-- Período: 65535 (16-bit)
-- Função `set_pwm_duty(htim, channel, duty)` atualiza compare value
-- Duty cycle proporcional ao valor do sensor (0-255 → 0-100%)
-
-#### **Proteção de Concorrência**
-- Macros `ATOMIC_READ(var)` e `ATOMIC_WRITE(var, value)`
-- Desabilitam interrupções durante acesso a variáveis compartilhadas
-- Protegem `system_state`, `i2c`, `mode`, `read` de race conditions
-- Essencial para sincronização entre ISR e main loop
-
-### Fluxos de Operação:
-
-#### Modo 1 (PWM Controlado):
 ```
-TIM2 Interrupt → STATE_1 (set read flag)
-→ STATE_2 (config A0) → STATE_3 (read A0) 
-→ STATE_4 (update PWM) → STATE_1 (idle)
+┌────────────────────────────────────────────────────────────────┐
+│                      ESP32 Microcontrolador                    │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  ┌──────────────────┐     ┌───────────────────────────────┐    │
+│  │  Sensores I/O    │     │  Camada de Processamento      │    │
+│  ├──────────────────┤     ├───────────────────────────────┤    │
+│  │ • DHT11 (GPIO23) │     │ • FreeRTOS Tasks              │    │
+│  │ • BH1750 (I2C)   │     │ • Software Timers             │    │
+│  │ • KY-037 (ADC5)  │     │ • State Machine (4 estados)   │    │
+│  │ • Button (GPIO22)│     │ • Média Móvel & Histerese     │    │
+│  └──────────────────┘     │ • Buffer Circular (Flash)     │    │
+│                           └───────────────────────────────┘    │
+│  ┌──────────────────┐     ┌───────────────────────────────┐    │
+│  │  Atuadores       │     │  Interface & Persistência     │    │
+│  ├──────────────────┤     ├───────────────────────────────┤    │
+│  │ • LED Vermelho   │     │ • UART / JSON Handler         │    │
+│  │ • LED Amarelo    │     │ • NVS Flash Storage           │    │
+│  │ • Buzzer (PWM)   │     │ • Sync NTP (se WiFi)          │    │
+│  │ • Histerese      │     │ • Exportação CSV/JSON         │    │
+│  └──────────────────┘     └───────────────────────────────┘    │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-#### Modo 2 (DAC Controlado):
+### Máquina de Estados (4 Estados)
+
 ```
-TIM2 Interrupt → STATE_1 (set read flag)
-→ STATE_5 (config A1) → STATE_6 (read A1)
-→ STATE_7 (update amplitude) → STATE_1 (idle)
-(DAC DMA runs continuously triggered by TIM4)
+┌──────────────┐
+│ STATE_INIT   │  Inicialização e testes de sensores
+│ (PowerOn)    │  • Testa I2C com BH1750
+│              │  • Valida DHT11 e KY-037
+└─────┬────────┘  • Sincroniza relógio (NTP)
+      │
+      ├──(sucesso)──→ STATE_NORMAL ◄──┐
+      │               (operação)      │
+      │               • Leitura contínua
+      │               • Dentro das faixas
+      │               • LED desligado/verde
+      │                 │
+      │                 │ (fora de limite)
+      │                 ↓
+      │              STATE_ALERT
+      │              (alerta)
+      │              • 1+ variáveis fora
+      │              • 1–5 min: LED amarelo
+      │              • > 5 min: LED vermelho
+      │              • Buzzer ativo
+      │                 │
+      │                 └─(volta ao normal)→┘
+      │
+      └──(erro)──→ STATE_ERROR
+                   (falha)
+                   • Sensor não responde
+                   • LED vermelho piscante
+                   • Buzzer contínuo
+                   • Tenta recuperação automática
 ```
 
-#### Modo 3 (PWM + DAC):
-```
-TIM2 Interrupt → STATE_1 (set read flag)
-→ STATE_2 (config A0) → STATE_3 (read A0) → STATE_4 (update PWM)
-→ STATE_5 (config A1) → STATE_6 (read A1) → STATE_7 (update amplitude)
-→ STATE_1 (idle)
+### Fluxo Operacional Detalhado
+
+#### **Fase de Inicialização (STATE_INIT → STATE_NORMAL)**
+1. FreeRTOS scheduler inicia
+2. I2C configurado, BH1750 testado
+3. DHT11 e KY-037 inicializados
+4. NVS flash verificado e formatado se necessário
+5. NTP sync iniciado (se conectado a WiFi)
+6. Tasks e Software Timers criadas
+7. Transição para STATE_NORMAL
+
+#### **Operação Normal (STATE_NORMAL)**
+1. **Timer periodicidade**:
+   - DHT11: a cada 2 s
+   - BH1750: a cada 10 s
+   - KY-037: a cada 1 s
+2. **Processamento**:
+   - Armazena amostra em buffer circular
+   - Calcula média móvel de 1 min
+   - Compara com limites
+3. **Decisão**:
+   - Se dentro → LED desligado, nenhum alerta
+   - Se fora por ≥ 3 leituras → STATE_ALERT
+4. **Persistência**:
+   - A cada 5 min: escreve agregados em NVS
+
+#### **Alerta (STATE_ALERT)**
+1. **Escalada temporal**:
+   - 1–5 min fora: LED amarelo, buzzer pulsos (30 em 30 s)
+   - > 5 min: LED vermelho, buzzer contínuo
+   - > múltiplas variáveis críticas: LED vermelho, buzzer contínuo
+2. **Ações do usuário**:
+   - Botão clique: ativa snooze (buzzer silencia por 5 min)
+   - Botão longo: force reset do alerta
+3. **Volta a STATE_NORMAL**:
+   - Quando 3 leituras consecutivas voltam aos limites (histerese)
+
+#### **Erro (STATE_ERROR)**
+1. **Detecção**:
+   - Falha de I2C com BH1750 (não responde)
+   - DHT11 com taxa de erro > 50%
+   - Flash corrompido
+2. **Resposta**:
+   - LED vermelho piscante (100 ms on/off)
+   - Buzzer contínuo até intervenção
+3. **Recuperação**:
+   - Tenta reinicializar sensores a cada 10 s
+   - Retorna a STATE_NORMAL se sucesso
+   - Mantém-se em STATE_ERROR se falha persistir
+
+---
+
+## Módulos de Software
+
+### 1. **Drivers de Sensores** (`src/` + `include/`)
+
+#### `dht11_sensor.h / dht11_sensor.c`
+- Protocolo 1-Wire com DHT11/DHT22
+- Retorna `dht11_data_t { temperature, humidity }`
+- Intervalo: 2 s (configurável em `env.h`)
+- Implementa `sensor_base_t` interface
+
+#### `bh1750fvi_sensor.h / bh1750fvi_sensor.c`
+- I2C com modo de sensibilidade automática
+- Retorna lux (0–54000 lux)
+- Suporta ajuste de sensibilidade (High, Medium, Low)
+- Intervalo: 10 s (configurável)
+
+#### `KY-037_sensor.h / KY-037_sensor.c`
+- ADC do microfone LM393
+- Cálculo RMS em janela de 1 s
+- Score 0–100 (linear do ADC 0–4095)
+- Intervalo: 1 s (configurável)
+
+### 2. **Monitoramento Periódico** (`sensor_monitor.h / sensor_monitor.c`)
+- Wrapper que encapsula leitura assíncrona
+- FreeRTOS Software Timers + Tasks
+- Callbacks após cada leitura bem-sucedida
+- Máximo 3 sensores simultâneos
+
+**Exemplo de uso:**
+```c
+sensor_monitor_t* monitor = new_sensor_monitor(
+    &dht11_sensor,          // Sensor base
+    2000,                   // Intervalo 2 s (em ms)
+    sizeof(dht11_data_t),   // Tamanho dos dados
+    "DHT11",                // Nome
+    on_dht11_read           // Callback
+);
+start_sensor_monitoring(monitor);
 ```
 
-#### Alternância de Modos (Button B1):
+### 3. **Histórico e Conformidade** (`sensor_history.h / sensor_history.c`)
+- Estrutura `full_sensor_read_t { temperature, humidity, lux, noise_level }`
+- Buffer circular com média móvel
+- Função `compute_compliance_percentage()`:
+  - Calcula % de amostras dentro das faixas em 24 h
+  - Meta: ≥ 85%
+- Função `get_min_max_avg()` para estatísticas
+
+### 4. **Sistema de Alertas** (`alerts.h / alerts.c`)
+- Estados: `ALERT_NONE`, `ALERT_WARNING`, `ALERT_CRITICAL`
+- Controla LEDs (GPIO) e Buzzer (PWM/LEDC)
+- Queue assíncrona de alertas
+- Função `alerts_snooze(duration_ms)` para silenciar temporariamente
+
+**Exemplo:**
+```c
+alerts_send_alert(ALERT_WARNING, "Temperature out of range!");
+alerts_snooze(300000);  // Silencia por 5 min
 ```
-Button Press (EXTI) → HAL_GPIO_EXTI_Callback()
-→ Increment mode (1→2→3→1)
-→ Start/Stop DAC DMA or PWM accordingly
+
+### 5. **Máquina de Estados** (`state_machine.h / state_machine.c`)
+- Estados: `STATE_INIT`, `STATE_NORMAL`, `STATE_ALERT`, `STATE_ERROR`
+- Eventos: `EVENT_INIT_COMPLETE`, `EVENT_SENSOR_OUT_OF_RANGE`, `EVENT_RECOVERY`, etc.
+- Callbacks de transição, entrada e saída de estados
+- Sincronização com mutex FreeRTOS
+- Proteção contra transições inválidas
+
+**Transições válidas:**
 ```
+STATE_INIT → STATE_NORMAL ou STATE_ERROR
+STATE_NORMAL ↔ STATE_ALERT (bidirecional)
+STATE_NORMAL → STATE_ERROR (falha crítica)
+STATE_ERROR → STATE_NORMAL (após recuperação)
+Qualquer estado → STATE_INIT (reset)
+```
+
+### 6. **Persistência em Flash** (`lib/flash_buffer.h / flash_buffer.c`)
+- NVS (Non-Volatile Storage) do ESP-IDF
+- Buffer circular com até 48 h de dados (configurável)
+- Função `flash_buffer_write()` atômicas
+- Função `flash_buffer_read()` com ordenação temporal
+- Recovery automático em boot
+
+**Exemplo:**
+```c
+flash_buffer_t* buffer = flash_buffer_create("sensor_data", 1000);
+flash_buffer_write(buffer, &reading);  // Escreve automaticamente na próxima oportunidade
+```
+
+### 7. **Interface UART/JSON** (`uart_json_handler.h / uart_json_handler.c`)
+- Comunicação serial (115200 baud padrão)
+- Comandos estruturados em JSON
+- Suporta: `get_status`, `export_data`, `set_limits`, `snooze_alert`
+- Exemplo de resposta:
+```json
+{
+  "cmd": "get_status",
+  "temp": 24.5,
+  "humidity": 52.0,
+  "lux": 280,
+  "noise": 45,
+  "state": "NORMAL",
+  "compliance": 92.5,
+  "timestamp": "2025-12-13T14:30:45Z"
+}
+```
+
+### 8. **Sincronização de Tempo** (`time_sync.h / time_sync.c`)
+- NTP (Network Time Protocol) se WiFi disponível
+- Fallback para relógio interno do ESP32
+- Timestamps precisos para cada leitura
+- Conversão local para horário padrão
+
+### 9. **Driver de Botão** (`button_driver.h / button_driver.c`)
+- Debounce de 50 ms
+- Detecção de clique (< 500 ms) vs pressionamento longo (≥ 2000 ms)
+- Notificações via `xTaskNotify()` para main task
+- Estados: single click, long press
+
+---
 
 ## Configuração de Hardware
 
-- **Microcontrolador**: STM32L476RG (Nucleo-L476RG)
-  - **Saída DAC**: Pino PA5 do STM32
-    - Resolução: 12-bit (0-4095)
-    - Onda senoidal: 512 amostras por período
-    - Trigger: TIM4 TRGO
-  - **Saída PWM**: Pino PA11 (TIM1_CH4)
-    - Período: 65535 (16-bit)
-    - Duty cycle variável: 0-100%
-  - **Botão**: B1 (PC13) para alternância de modos
-  - **Timers**: 
-    - TIM2: Leituras periódicas (500ms)
-    - TIM4: Trigger para DAC DMA
-  - **DMA**: Canais para I2C3 (TX/RX) e DAC CH2
-- **Módulo ADC/DAC**: PCF8591 (endereço I2C: 0x48)
-  - Conexões I2C: SDA (PC1) e SCL (PC0) conectados ao I2C3 do STM32
-  - 2 canais ADC utilizados: A0 (para PWM) e A1 (para DAC)
-  - Resolução ADC: 8-bit (0-255)
+### Pinagem dos Componentes
+
+| Componente | GPIO/Interface | Tipo | Função |
+|-----------|----------------|------|--------|
+| **DHT11/22** | GPIO 23 | Digital (1-Wire) | Temperature & Humidity |
+| **BH1750FVI** | I2C (SDA=21, SCL=19/20) | I2C | Light Sensor (0x23) |
+| **KY-037** | ADC Channel 5 (GPIO 33) | Analog ADC | Noise Level |
+| **Button (User)** | GPIO 22 | Digital + EXTI | Click / Long Press |
+| **LED Red** | GPIO 26 | GPIO Output | Alarm State |
+| **LED Yellow** | GPIO 32 | GPIO Output | Warning State |
+| **Buzzer** | GPIO 15 (LEDC CH0) | PWM/LEDC | Alert Sound |
+| **UART TX** | GPIO 1 | UART | Debug/Export |
+| **UART RX** | GPIO 3 | UART | Remote Control |
+
+### Configurações de I2C (BH1750)
+- **Endereço**: 0x23 (padrão, não configurable sem modificar hardware)
+- **Clock**: 100 kHz (Standard Mode, sem Fast-Mode I2C)
+- **Pull-ups**: 4.7 kΩ recomendado (já inclusos na maioria dos breakouts)
+- **Barramento**: Dedicado (sem outros dispositivos I2C)
+
+### Configurações ADC (KY-037)
+- **Resolução**: 12-bit (0–4095)
+- **Atenuação**: 11dB (para range máximo 0–3.6V)
+- **Amostragem**: 200 µs (configurável)
+
+### Diagrama de Conexão Simplificado
+
+```
+ESP32 DevKit / ESP32-S2 Saola
+┌─────────────────────────────────────┐
+│                                     │
+│ GPIO23──→ DHT11 (Data)              │
+│           • GND = GND               │
+│           • VCC = 3.3V              │
+│                                     │
+│ GPIO22──→ Button ── GND             │
+│           (Pull-up interno ativo)   │
+│                                     │
+│ GPIO26──→ LED Red ──[220Ω]── GND    │
+│ GPIO32──→ LED Yellow ──[220Ω]── GND │
+│                                     │
+│ GPIO15──→ Buzzer (PWM)              │
+│          • GND = GND                │
+│          • VCC = 3.3V/5V (amplifier)│
+│                                     │
+│ I2C (SDA21, SCL19/20)──→ BH1750     │
+│                         ├─ VCC=3.3V │
+│                         ├─ GND      │
+│                         └─ ADDR=GND │
+│                                     │
+│ GPIO33 (ADC5)──→ KY-037 (OUT)       │
+│                 ├─ GND              │
+│                 └─ VCC=3.3V/5V      │
+│                                     │
+│ GPIO1 (TX) ↔ Serial Monitor         │
+│ GPIO3 (RX)  (115200 baud)           │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+---
 
 ## Estrutura do Projeto
 
 ```
-.
-├── Core/
-│   ├── Inc/                  # Arquivos de cabeçalho
-│   │   ├── main.h           # Definições principais e protótipos
-│   │   ├── circular_buffer.h # API do buffer circular (legado)
-│   │   ├── cmd_driver.h     # API do driver de comandos UART (legado)
-│   │   ├── stm32l4xx_hal_conf.h # Configuração HAL
-│   │   └── stm32l4xx_it.h   # Tratadores de interrupção
-│   └── Src/                 # Código-fonte
-│       ├── main.c           # Programa principal, máquina de estados e PCF8591
-│       ├── circular_buffer.c # Buffer circular (legado)
-│       ├── cmd_driver.c     # Driver de comandos (legado)
-│       ├── stm32l4xx_hal_msp.c # Inicialização MSP (DMA, GPIO, I2C, DAC, PWM)
-│       ├── stm32l4xx_it.c   # Handlers de interrupção (DMA, I2C, EXTI)
-│       └── system_stm32l4xx.c # Inicialização do sistema
-├── Drivers/                 # Drivers HAL e CMSIS da ST
-│   ├── STM32L4xx_HAL_Driver/ # Biblioteca HAL
-│   └── CMSIS/               # CMSIS Core e Device
-├── docs/                    # Documentação do projeto
-│   ├── state_machine_diagram.md # Documentação detalhada dos estados
-│   └── images/              # Diagramas e imagens
-│       ├── state_machine.jpg # Diagrama principal de estados
-│       └── Diagrama de estados cmd.svg # Diagrama do processador de comandos
-├── build/                   # Diretório de saída da compilação
-├── Makefile                 # Sistema de build
-├── STM32L476XX_FLASH.ld     # Script de linker
-├── startup_stm32l476xx.s    # Arquivo de inicialização
-└── emebedded_sys_2025.2.ioc # Configuração do STM32CubeMX
+emebedded_sys_2025.2/
+├── CMakeLists.txt                 # Build configuration (ESP-IDF)
+├── platformio.ini                 # PlatformIO config (alternativo)
+├── README.md                      # Este arquivo
+├── LICENSE                        # Licença MIT
+├── sdkconfig*                     # Configurações ESP-IDF para diferentes placas
+│
+├── components/                    # Componentes reutilizáveis
+│   ├── dht/                      # DHT11/22 (reutilizável)
+│   │   ├── CMakeLists.txt
+│   │   ├── dht.h
+│   │   ├── dht.c
+│   │   └── LICENSE
+│   │
+│   └── esp_idf_lib_helpers/      # Helpers de compatibilidade
+│       ├── CMakeLists.txt
+│       └── esp_idf_lib_helpers.h
+│
+├── include/                       # Headers do projeto principal
+│   ├── alerts.h                  # Sistema de alertas
+│   ├── bh1750fvi_sensor.h        # Driver BH1750
+│   ├── button_driver.h           # Driver do botão
+│   ├── dht11_sensor.h            # Wrapper DHT11
+│   ├── env.h                     # Configurações e limites
+│   ├── flash_record.h            # Persistência (legado)
+│   ├── KY-037_sensor.h           # Driver ruído
+│   ├── sensor_base.h             # Interface base dos sensores
+│   ├── sensor_history.h          # Histórico e conformidade
+│   ├── sensor_monitor.h          # Monitoramento periódico
+│   ├── state_machine.h           # Máquina de estados
+│   ├── time_sync.h               # Sincronização NTP
+│   └── uart_json_handler.h       # Interface UART/JSON
+│
+├── lib/                          # Bibliotecas externas
+│   ├── bh1750/                  # BH1750 (light sensor lib)
+│   │   ├── bh1750.h
+│   │   └── bh1750.c
+│   │
+│   └── flash_buffer/            # Buffer persistente
+│       ├── flash_buffer.h
+│       ├── flash_buffer.c
+│       └── README.md
+│
+├── src/                         # Código principal
+│   ├── CMakeLists.txt
+│   ├── main.c                  # Entry point + task main
+│   ├── alerts.c                # Sistema de alertas
+│   ├── bh1750fvi_sensor.c      # Driver BH1750
+│   ├── button_driver.c         # Driver botão
+│   ├── dht11_sensor.c          # Wrapper DHT11
+│   ├── KY-037_sensor.c         # Driver ruído (ADC)
+│   ├── sensor_history.c        # Histórico
+│   ├── sensor_monitor.c        # Monitoramento
+│   ├── state_machine.c         # Máquina de estados
+│   ├── time_sync.c             # Sync NTP
+│   └── uart_json_handler.c     # UART/JSON
+│
+├── main/                       # ESP-IDF main component
+│   └── idf_component.yml
+│
+├── docs/                       # Documentação
+│   ├── project_6.md           # Especificação original
+│   ├── STATE_MACHINE_USAGE.md # Uso da máquina de estados
+│   └── images/                # Diagramas
+│       ├── diagrama_de_estados.svg
+│       └── ...
+│
+└── test/                       # Testes (futuro)
+    └── README
 ```
+
+---
 
 ## Como Usar
 
-### 1. Configuração Inicial
-Após compilar e gravar o firmware:
+### Pré-requisitos
 
-1. **Conecte o PCF8591** ao STM32L476RG:
-   - SDA: PC1 (I2C3_SDA)
-   - SCL: PC0 (I2C3_SCL)
-   - VCC: 3.3V ou 5V
-   - GND: GND
+- **ESP-IDF** (v5.0+) ou **PlatformIO** com suporte a ESP32
+- **Git** para clonar o repositório
+- **VS Code** com extensões recomendadas (C/C++, CMake, PlatformIO)
+- **USB-to-Serial driver** para conexão com ESP32
 
-2. **Conecte sensores** aos canais ADC do PCF8591:
-   - **AIN0**: Potenciômetro ou sensor para controle PWM (0-255)
-   - **AIN1**: Potenciômetro ou sensor para controle amplitude DAC (0-255)
+### 1. Preparação do Ambiente
 
-3. **Saídas do STM32**:
-   - **PA5 (DAC_OUT)**: Conecte osciloscópio ou alto-falante para ver/ouvir onda senoidal
-   - **PA11 (TIM1_CH4)**: Conecte LED ou osciloscópio para ver PWM
-
-4. **Botão B1** (PC13): Pré-instalado na placa Nucleo
-
-5. Sistema iniciará no **Modo 1** (PWM ativo)
-
-### 2. Operação no Modo 1 (PWM - Padrão)
-1. Sistema inicia neste modo automaticamente
-2. **Ajuste o potenciômetro/sensor em AIN0**:
-   - Valor baixo (próximo a 0): Duty cycle próximo a 0%
-   - Valor médio (128): Duty cycle ~50%
-   - Valor alto (255): Duty cycle ~100%
-3. Observe a saída PWM em **PA11** com osciloscópio ou LED
-4. Atualização automática a cada 500ms (TIM2)
-
-### 3. Mudança para Modo 2 (DAC)
-1. **Pressione o botão B1** uma vez
-2. PWM é desativado automaticamente
-3. DAC começa a gerar onda senoidal em **PA5**
-4. **Ajuste o potenciômetro/sensor em AIN1**:
-   - Valor baixo: Amplitude próxima a zero (sem onda)
-   - Valor médio (128): Amplitude ~2048 (~1.65V p-p)
-   - Valor alto (255): Amplitude máxima 4095 (~3.3V p-p)
-5. Conecte osciloscópio ou alto-falante para visualizar/ouvir a onda
-6. Frequência da onda determinada por TIM4 period
-
-### 4. Mudança para Modo 3 (PWM + DAC)
-1. **Pressione o botão B1** novamente
-2. PWM é reativado mantendo DAC ativo
-3. **AIN0 controla PWM** (PA11)
-4. **AIN1 controla amplitude DAC** (PA5)
-5. Ambas as saídas operam simultaneamente
-6. Ideal para controles independentes
-
-### 5. Retorno ao Modo 1
-1. **Pressione o botão B1** mais uma vez
-2. DAC é desativado
-3. Retorna ao Modo 1 (apenas PWM)
-4. Ciclo continua: Modo 1 → Modo 2 → Modo 3 → Modo 1...
-
-## Configuração dos Periféricos
-
-### PCF8591 (ADC/DAC via I2C3)
-- **Endereço I2C**: 0x48 (7-bit), 0x90 (8-bit shifted)
-- **Pinos I2C3**: PC0 (SCL), PC1 (SDA)
-- **Canais ADC utilizados**: A0 (PWM control), A1 (DAC amplitude)
-- **Resolução ADC**: 8-bit (0-255)
-- **Alimentação**: 3.3V ou 5V
-- **Modo de Operação**: 4 canais single-ended (`four_single_ended = 0b00`)
-- **Clock I2C**: 100 kHz (Standard Mode)
-- **DMA**: Habilitado para TX e RX
-
-### DAC1 (Saída Analógica)
-- **Pino**: PA5 (DAC1_OUT2)
-- **Resolução**: 12-bit (0-4095)
-- **Alinhamento**: Right-aligned
-- **Trigger**: TIM4 TRGO (Timer 4 Update Event)
-- **DMA**: Channel 4 para transferência contínua do buffer
-- **Buffer**: 512 amostras de onda senoidal
-- **Forma de onda**: Senoidal calculada com `sin()` de `math.h`
-
-### TIM1 (PWM Output)
-- **Pino**: PA11 (TIM1_CH4)
-- **Prescaler**: 0 (clock total)
-- **Período (ARR)**: 65535 (16-bit)
-- **Modo**: PWM Mode 1
-- **Compare Value**: Calculado como `(Period * duty) / 255`
-- **Frequência PWM**: ~1.2 kHz (80 MHz / 65536)
-
-### TIM2 (Trigger Periódico)
-- **Função**: Dispara leituras de sensores periodicamente
-- **Prescaler**: 7999 (divide por 8000)
-- **Período (ARR)**: 500
-- **Frequência de Atualização**: ~2 Hz (a cada 500ms)
-- **Modo**: Interruption mode
-- **Callback**: `HAL_TIM_PeriodElapsedCallback()`
-
-### TIM4 (Trigger DAC)
-- **Função**: Trigger para conversões DAC DMA
-- **Prescaler**: 7999
-- **Período (ARR)**: 10
-- **Frequência**: ~1 kHz
-- **Master Mode**: Update event (TRGO)
-- **Conectado**: DAC1 Channel 2 trigger
-
-## Pré-requisitos
-
-Certifique-se de que as seguintes ferramentas estão instaladas no seu sistema:
-
-- GCC ARM toolchain (`gcc-arm-none-eabi`)
-- Make
-- CMake
-- Ferramentas ST-Link (`stlink-tools`)
-
-Você pode instalar essas dependências executando o script `setup_env.sh`:
-
+#### Opção A: ESP-IDF (recomendado)
 ```bash
-sudo setup_env.sh
+# Clone o repositório
+git clone <repo_url>
+cd emebedded_sys_2025.2
+
+# Configure o ESP-IDF
+source $IDF_PATH/export.sh
+
+# Selecion a placa (ESP32, ESP32-S2, etc.)
+idf.py set-target esp32
+
+# Compile
+idf.py build
 ```
 
-## Ambiente de Desenvolvimento
-
-Para configurar o ambiente de desenvolvimento no Visual Studio Code, as seguintes extensões são recomendadas:
-
-- [**C/C++ Extension Pack**](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools-extension-pack): Fornece suporte para desenvolvimento em C/C++.
-- [**CMake Tools**](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools): Suporte para projetos baseados em CMake.
-- [**Makefile Tools**](https://marketplace.visualstudio.com/items?itemName=ms-vscode.makefile-tools): Suporte para projetos baseados em Makefile.
-- [**Code Spell Checker**](https://marketplace.visualstudio.com/items?itemName=streetsidesoftware.code-spell-checker): Verificador ortográfico para melhorar a qualidade do código e documentação.
-
-Você pode instalar essas extensões na Visual Studio Code Marketplace.
-
-## Compilando o Projeto
-
-Para compilar o projeto, execute o seguinte comando:
-
+#### Opção B: PlatformIO
 ```bash
-make
+# Instale a extensão PlatformIO no VS Code
+# Abra o projeto no VS Code
+# PlatformIO detecta automaticamente e configura o ambiente
+
+# Build
+pio run
+
+# Upload (com debug)
+pio run --target upload --upload-port COM3
 ```
 
-Isso gerará os seguintes arquivos no diretório `build/`:
+### 2. Configuração dos Limites (`include/env.h`)
 
-- `emebedded_sys_2025.2.elf`: Arquivo executável
-- `emebedded_sys_2025.2.hex`: Arquivo Intel HEX
-- `emebedded_sys_2025.2.bin`: Arquivo binário
+Ajuste os seguintes defines conforme necessário:
 
-## Gravando o Firmware
+```c
+/* Limites de Biotério */
+#define TEMP_MIN 22.0
+#define TEMP_MAX 26.0
 
-Para gravar o firmware no microcontrolador STM32L476RG, conecte sua placa via ST-Link e execute:
+#define HUM_MIN  40.0
+#define HUM_MAX  60.0
 
-```bash
-make upload
+#define LUX_DAY_MIN 150
+#define LUX_DAY_MAX 300
+#define LUX_NIGHT_MIN 0
+#define LUX_NIGHT_MAX 5  // Tolerância para vazamento
+
+#define NOISE_PEAK_LIMIT 3048
+#define NOISE_AVG_LIMIT  2100
+
+/* Tolerâncias de Tempo (em amostras) */
+#define DHT_WINDOW_WARNING_TOLERANCE 30   // 5 min × 2 s = 150 s
+#define DHT_WINDOW_CRITICAL_TOLERANCE 60  // 10 min
+
+#define LIGHT_WINDOW_WARNING_TOLERANCE 12  // 2 min × 10 s
+#define LIGHT_WINDOW_CRITICAL_TOLERANCE 30 // 5 min
+
+/* Intervalos de Amostragem (ms) */
+#define DHT11_READ_INTERVAL_MS 2000
+#define BH1750_READ_INTERVAL_MS 10000
+#define KY037_READ_INTERVAL_MS 1000
 ```
 
-Isso gravará o arquivo binário na memória flash do microcontrolador no endereço `0x8000000`.
-
-## Limpando a Compilação
-
-Para limpar os arquivos gerados na compilação, execute:
+### 3. Gravação e Conexão
 
 ```bash
-make clean
+# Detecte a porta serial
+ls /dev/ttyUSB*  # Linux
+COM<X>           # Windows
+
+# Compile e grave com ESP-IDF
+idf.py -p /dev/ttyUSB0 flash monitor
+
+# Ou com PlatformIO
+pio run --target upload --upload-port /dev/ttyUSB0
+pio device monitor
 ```
 
-## Configuração do Projeto
+### 4. Operação Normal
 
-O projeto está configurado para o microcontrolador STM32L476RG com as seguintes definições:
+#### Estado Inicial
+- Sistema inicia em STATE_INIT
+- LEDs e buzzer testados
+- Sensores inicializados
+- Transição para STATE_NORMAL (LED desligado)
 
-- **CPU**: Cortex-M4
-- **FPU**: FPv4-SP-D16
-- **Float ABI**: Hard
-- **Otimização**: Debug (`-Og`)
+#### Durante Operação
+- **Dados visíveis via UART** (115200 baud):
+  ```
+  [SensorMonitor] DHT11: T=24.5°C, RH=52.0%
+  [SensorMonitor] BH1750: 280 lux
+  [SensorMonitor] KY-037: 42 (score)
+  [StateM] Todos os parâmetros OK
+  ```
 
-Você pode modificar essas configurações no `Makefile`.
+- **Alertas Visuais/Sonoros**:
+  - LED amarelo + buzzer pulsos → temperatura / umidade / luz fora por 1–5 min
+  - LED vermelho + buzzer contínuo → alarme crítico (> 5 min ou múltiplas)
+
+- **Interação com Botão**:
+  - Clique curto (< 500 ms): Ativa snooze (buzzer silencia por 5 min)
+  - Pressionamento longo (≥ 2 s): Reset manual do estado de alerta
+
+#### Exportação de Dados
+
+Via UART, envie comando JSON:
+```json
+{"cmd": "export_data", "format": "csv", "duration_hours": 24}
+```
+
+Resposta (amostra de 24 h):
+```csv
+timestamp,temperature,humidity,lux,noise_score,state
+2025-12-13T00:00:00Z,23.2,48.5,2,35,NORMAL
+2025-12-13T01:00:00Z,23.1,49.2,1,32,NORMAL
+...
+2025-12-13T23:00:00Z,24.8,51.3,280,48,ALERT
+Min/Max/Avg: T=22.1/26.3/24.5°C, RH=38/62/50.5%, Lux=0/320/145, Noise=25/78/45
+Conformidade: 88.5% (acima do alvo de 85%)
+```
+
+### 5. Monitoramento em Tempo Real
+
+**Via Serial Monitor** (VS Code):
+- Conecte via porta USB
+- Abra a paleta (Ctrl+Shift+P) e procure "Serial Monitor"
+- Taxa: 115200 baud
+
+**Via Script Python** (opcional):
+```python
+import serial
+import json
+
+ser = serial.Serial('/dev/ttyUSB0', 115200)
+
+while True:
+    if ser.in_waiting > 0:
+        line = ser.readline().decode('utf-8').strip()
+        if line.startswith('{'):
+            data = json.loads(line)
+            print(f"T={data['temp']}°C, RH={data['humidity']}%, Lux={data['lux']}")
+```
+
+---
+
+## Configuração Avançada
+
+### Ajuste de Histerese
+
+Altere em `include/env.h`:
+```c
+#define DHT_WINDOW_WARNING_TOLERANCE 30  // Número de amostras antes de alertar
+```
+
+- Valor baixo: alerta mais rápido, mais falsos positivos
+- Valor alto: alerta mais lento, mais estável
+
+### Modificação de Intervalo de Amostragem
+
+Em `include/env.h`:
+```c
+#define DHT11_READ_INTERVAL_MS 2000  // 2 s (mín. ~1.5 s para DHT11)
+#define BH1750_READ_INTERVAL_MS 10000 // 10 s
+#define KY037_READ_INTERVAL_MS 1000   // 1 s (mín. para RMS)
+```
+
+### Persistência em Flash
+
+Em `src/main.c`, configure o tamanho do buffer circular:
+```c
+buffer = flash_buffer_create("sensor_data", 2880);  // 48 h @ 1 min avg
+```
+
+### Sincronização NTP
+
+Em `include/time_sync.h`, configure servidor NTP:
+```c
+#define NTP_SERVER "pool.ntp.org"
+#define NTP_TIMEOUT_MS 5000
+```
+
+---
+
+## Critérios de Aceite (MVP)
+
+- ☐ **Leituras Estáveis**: T/UR + Lux + Ruído por 24 h sem erros
+- ☐ **Display de Status**: Exibe valores atuais + estado (OK/Atenção/Alarme)
+- ☐ **Alertas Automáticos**: LED/Buzzer disparam conforme regras (≥ 3 leituras, > 5 min, histerese)
+- ☐ **Persistência**: Dados salvos em flash; recuperação automática em reboot
+- ☐ **Exportação**: CSV/JSON com mín/máx/média, % conformidade e timestamps
+- ☐ **Interação**: Botão permite snooze/reset de alertas
+- ☐ **Conformidade**: Cálculo automático: ≥ 85% de tempo dentro das faixas = OK
+- ☐ **Documentação**: Diagrama de pinagem, instalação e limites configurados
+
+---
+
+## Troubleshooting
+
+### Problema: BH1750 não responde (I2C error)
+**Solução:**
+1. Verifique conexões I2C (SDA, SCL, GND, VCC)
+2. Confira pull-ups 4.7 kΩ nas linhas I2C
+3. Use `i2cdetect -y 1` (Linux) para verificar endereço 0x23
+4. Tente alterar velocidade I2C em `env.h`
+
+### Problema: DHT11 leituras falhando (checksum error)
+**Solução:**
+1. Aumente intervalo em `env.h` (DHT quer ~2 s entre leituras)
+2. Adicione capacitor 100 nF entre dados e GND
+3. Verifique alimentação (3.3V estável)
+4. Se instável, use DHT22 (melhor tolerance)
+
+### Problema: Buzzer não faz som
+**Solução:**
+1. Verifique GPIO 15 está livre (não conflita com flash)
+2. Teste PWM direto: `ledcWrite(0, 128)` em `alerts.c`
+3. Se buzzer passivo, verifique polaridade e tensão (3.3V vs 5V)
+4. Use amplificador externo se sinal fraco
+
+### Problema: Botão não responde
+**Solução:**
+1. Teste com `digitalWrite(GPIO_22, HIGH)` (pull-up interno)
+2. Verifique debounce de 50 ms em `button_driver.c`
+3. Monitore ISR em logs
+4. Use multímetro para confirmar press/release
+
+### Problema: Flash corrompida ou cheio
+**Solução:**
+```bash
+# Apague NVS (perderá dados!)
+idf.py erase-flash
+
+# Ou parcialmente (ESP-IDF)
+idf.py erase-otadata
+```
+
+---
+
+##  Referências
+
+### Datasheets de Sensores
+- [DHT11/DHT22 Datasheet](https://www.adafruit.com/datasheets/DHT22.pdf)
+- [BH1750FVI Datasheet](https://datasheet.lcsc.com/lcsc/2009261808_ROHM-BH1750FVI-TR_C39381.pdf)
+- [LM393 Comparator (KY-037)](https://datasheets.maximintegrated.com/en/ds/LM393.pdf)
+
+### Documentação ESP32
+- [ESP32 Technical Reference Manual](https://espressif-docs.readthedocs.io/projects/esp32-technical-reference-manual/en/latest/)
+- [ESP-IDF Official Docs](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/)
+- [FreeRTOS on ESP32](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/freertos.html)
+
+### Protocolos de Comunicação
+- [I2C Specification](https://www.nxp.com/docs/en/user-manual/UM10204.pdf)
+- [1-Wire Protocol (DHT)](https://www.maximintegrated.com/en/design/technical-documents/tutorials/706.html)
+
+### Padrões de Biotério
+- [FELASA (Federation European Laboratory Animal Science Association)](https://www.felasa.eu/) – Recomendações de bem-estar animal
+- [Guide for the Care and Use of Laboratory Animals (NIH)](https://grants.nih.gov/grants/olaw/guide-for-the-care-and-use-of-laboratory-animals.pdf)
+
+---
 
 ## Licença
 
-Este projeto está licenciado sob a Licença MIT. Consulte o arquivo `LICENSE` para mais detalhes.
+Este projeto está licenciado sob a **Licença MIT**. Consulte o arquivo [LICENSE](LICENSE) para mais detalhes.
 
-## Desenvolvimento
+---
 
-### Contribuindo
-Para contribuir com este projeto:
+## Contribuindo
 
-1. **Crie um Novo Branch**: Use nomes descritivos como `feature/nome-da-funcionalidade`
-2. **Atualize com STM32CubeMX**: Use o arquivo `.ioc` para configurações de hardware
-3. **Mantenha Arquitetura Modular**: Novos periféricos devem ter drivers separados
-4. **Teste Funcionalidades**: Verifique todos os estados da máquina de estados
-5. **Documente Mudanças**: Atualize README e state_machine_diagram.md
-6. **Envie Pull Request**: Mantenha o branch atualizado com `main`
+Para contribuir com melhorias:
 
-### Debugging
-- Use `HAL_UART_Transmit` para debug via serial
-- Habilite `#define DEBUG` para mensagens de transição de estado
-- Monitor o sistema através das mensagens de debug UART
-- Utilize breakpoints nos callbacks para verificar fluxo
-- Verifique timeouts de I2C/SPI para detectar problemas de hardware
-- Use osciloscópio para analisar sinais I2C/SPI em caso de falhas
+1. **Fork** o repositório
+2. **Crie um branch** com descrição: `feature/nova-funcionalidade`
+3. **Commit** mensagens claras em português
+4. **Teste** em hardware (24 h mínimo)
+5. **Pull Request** com documentação de mudanças
 
-## Referências
+### Checklist de Contribuição
+- ☐ Código compilando sem warnings
+- ☐ Logs claros (tags ESP-IDF: `SensorMonitor`, `StateM`, etc.)
+- ☐ Testes em múltiplas temperaturas/umidades (se aplicável)
+- ☐ README atualizado
+- ☐ Sem hardcodes (use `env.h`)
 
-- [Datasheet PCF8591](https://www.nxp.com/docs/en/data-sheet/PCF8591.pdf) - ADC/DAC 8-bit I2C
-- [Datasheet MAX7219](https://datasheets.maximintegrated.com/en/ds/MAX7219-MAX7221.pdf) - LED Display Driver
-- [STM32L476RG Reference Manual](https://www.st.com/resource/en/reference_manual/rm0351-stm32l47xxx-stm32l48xxx-stm32l49xxx-and-stm32l4axxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf) - Microcontrolador
-- [Documentação STM32 HAL](https://www.st.com/en/embedded-software/stm32cube.html) - Hardware Abstraction Layer
-- [I2C Protocol Guide](https://www.ti.com/lit/an/slva704/slva704.pdf) - Especificação do protocolo I2C
-- [SPI Protocol Guide](https://www.analog.com/en/analog-dialogue/articles/introduction-to-spi-interface.html) - Especificação do protocolo SPI
-- [STM32L4 DMA Documentation](https://www.st.com/resource/en/application_note/dm00046011-using-the-stm32f2-stm32f4-and-stm32f7-series-dma-controller-stmicroelectronics.pdf) - Direct Memory Access
+---
+
+## Suporte
+
+Para dúvidas ou problemas:
+1. Verifique este README e [docs/](docs/) detalhadamente
+2. Consulte [docs/STATE_MACHINE_USAGE.md](docs/STATE_MACHINE_USAGE.md) para máquina de estados
+3. Abra uma **Issue** no GitHub com:
+   - Placa ESP32 utilizada (DevKit, Saola, etc.)
+   - Logs do serial monitor
+   - Configuração de limites aplicada
+   - Passos para reproduzir problema
+
+---
+
+**Última atualização:** Dezembro 2025  
+**Status:** MVP em produção de testes
