@@ -103,29 +103,36 @@
 4. **Persistência**:
    - A cada 1 min: escreve agregados em NVS
 
-#### **Alerta (STATE_ALERT)**
-1. **Escalada temporal**:
-   - 1–5 min fora: LED amarelo, buzzer pulsos (30 em 30 s)
-   - > 5 min: LED vermelho, buzzer contínuo
-   - > múltiplas variáveis críticas: LED vermelho, buzzer contínuo
-2. **Ações do usuário**:
-   - Botão clique: ativa snooze (buzzer silencia por 5 min)
-   - Botão longo: force reset do alerta
-3. **Volta a STATE_NORMAL**:
-   - Quando 3 leituras consecutivas voltam aos limites (histerese)
+#### **Alerta (ALERT_WARNNING)**
+1. **Timer periodicidade**:
+   - DHT11: a cada 2 s
+   - BH1750: a cada 10 s
+   - KY-037: a cada 1 s
+2. **Processamento**:
+   - Armazena amostra em buffer circular
+   - Calcula média móvel de 1 min
+   - Compara com limites
+   - Ativa LED amarelo
+3. **Decisão**:
+   - Se dentro → ALERT_NONE
+   - Se fora por ≥ X leituras → ALERT_CRITICAL
+4. **Persistência**:
+   - A cada 1 min: escreve agregados em NVS
 
-#### **Erro (STATE_ERROR)**
-1. **Detecção**:
-   - Falha de I2C com BH1750 (não responde)
-   - DHT11 com taxa de erro > 50%
-   - Flash corrompido
-2. **Resposta**:
-   - LED vermelho piscante (100 ms on/off)
-   - Buzzer contínuo até intervenção
-3. **Recuperação**:
-   - Tenta reinicializar sensores a cada 10 s
-   - Retorna a STATE_NORMAL se sucesso
-   - Mantém-se em STATE_ERROR se falha persistir
+#### **Alerta (ALERT_CRITICAL)**
+1. **Timer periodicidade**:
+   - DHT11: a cada 2 s
+   - BH1750: a cada 10 s
+   - KY-037: a cada 1 s
+2. **Processamento**:
+   - Armazena amostra em buffer circular
+   - Calcula média móvel de 1 min
+   - Compara com limites
+   - Ativa LED vermelho e buzzer (1 pulso a cada 30s)
+4. **Decisão**:
+   - Se dentro → ALERT_NONE
+5. **Ações do usuário**:
+   - Botão clique: ativa snooze (buzzer silencia por 5 min)
 
 ---
 
