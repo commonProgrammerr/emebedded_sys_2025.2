@@ -12,24 +12,24 @@
 #include "flash_record.h"
 #include "esp_timer.h"
 #include "button_driver.h"
-#include "uart_json_handler.h" 
+#include "uart_json_handler.h"
 #include "time_sync.h"
 #include "alerts.h"
 #include "env.h"
+#include "driver/gpio.h"
 
 // Bits para eventos do botão via xTaskNotify
-#define EVT_BTN_CLICKED  0x01
-#define EVT_BTN_LONG     0x02
+#define EVT_BTN_CLICKED 0x01
+#define EVT_BTN_LONG 0x02
 
 flash_buffer_t *buffer = NULL;
 
 // Inicia a struct com valores minimos para evitar erro no calculo de média móvel
 full_sensor_read_t current_read = {
-    .temperature = 0.0f, 
-    .humidity = 20.0f,     
+    .temperature = 0.0f,
+    .humidity = 20.0f,
     .lux = 0.0f,
-    .noise_level = 0
-};
+    .noise_level = 0};
 
 // Sistema de botões com notificação assíncrona
 TaskHandle_t xMainTaskHandle = NULL;
@@ -53,18 +53,20 @@ void button_callback(int pin, button_event_t event);
 void app_main(void)
 {
     xMainTaskHandle = xTaskGetCurrentTaskHandle();
-    
+
     alerts_init();
     // Inicializa NVS
     esp_err_t ret = flash_buffer_system_init();
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE("main", "Falha ao inicializar NVS");
         return;
     }
 
     // Cria buffer (1440 amostras = 24h com 1 amostra por minuto)
     buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 1440);
-    if (!buffer) {
+    if (!buffer)
+    {
         ESP_LOGE("main", "Falha ao criar buffer");
         return;
     }
@@ -72,25 +74,24 @@ void app_main(void)
     // Inicializa botão com interrupção GPIO e callback assíncrono
     button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, button_callback, xMainTaskHandle);
 
-    // Teste: aguarda 5s por evento do botão, se detectar faz reboot
-    if (xTaskNotifyWait(0, UINT32_MAX, &btn_notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
-        
-        if (btn_notification_value & EVT_BTN_LONG) {
-            uart_json_dump_flash_and_restart(buffer);
+    for (uint8_t i = 0; i < 10; i++)
+    {
+        gpio_set_level(WARNING_STATE_GPIO, !(i % 2));
+        // aguarda 5s por evento do botão, se detectar faz reboot
+        if (xTaskNotifyWait(0, UINT32_MAX, &btn_notification_value, pdMS_TO_TICKS(500)) == pdTRUE)
+        {
+            if (btn_notification_value & EVT_BTN_LONG)
+            {
+                uart_json_dump_flash_and_restart(buffer);
+            }
+            else if (btn_notification_value & EVT_BTN_CLICKED)
+                break;
         }
-        
-        if (btn_notification_value & EVT_BTN_CLICKED) {
-            ESP_LOGI("BUTTON_TEST", ">>> EVENTO DETECTADO: Click Simples <<<");
-        }
-        
-        ESP_LOGW("BUTTON_TEST", "Evento detectado! Reiniciando em 1 segundo...");
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        ESP_LOGW("BUTTON_TEST", "REBOOTING NOW!");
-        esp_restart();
     }
+    gpio_set_level(WARNING_STATE_GPIO, 0);
 
     // Inicializa sistema de histórico em RAM
-    init_history_system(60); 
+    init_history_system(60);
 
     // Sincroniza hora com NTP via WiFi
     ret = sync_time_with_ntp("90225", "Segred0%%@2444", NULL, NULL);
@@ -99,7 +100,7 @@ void app_main(void)
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
     SensorStatus_t bh1750_status = bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
-    SensorStatus_t dht11_status = dht11_init(&dht11, DHT11_PIN); 
+    SensorStatus_t dht11_status = dht11_init(&dht11, DHT11_PIN);
     SensorStatus_t ky037_status = KY037_init(&ky_037, MIC_ADC_CHANEL);
 
     sensor_monitor_t *th_monitor = NULL;
@@ -107,46 +108,58 @@ void app_main(void)
     sensor_monitor_t *light_monitor = NULL;
 
     // Only create monitors for sensors that initialized successfully
-    if (dht11_status == SENSOR_OK) {
+    if (dht11_status == SENSOR_OK)
+    {
         th_monitor = new_sensor_monitor(
             &dht11, DHT11_READ_INTERVAL_MS, sizeof(dht11_context_t), "temp&humidity_monitor", save_dht11);
-    } else {
+    }
+    else
+    {
         ESP_LOGW("main", "DHT11 initialization failed, skipping monitor creation");
     }
 
-    if (ky037_status == SENSOR_OK) {
+    if (ky037_status == SENSOR_OK)
+    {
         noise_monitor = new_sensor_monitor(
             &ky_037, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_ky037);
-    } else {
+    }
+    else
+    {
         ESP_LOGW("main", "KY037 initialization failed, skipping monitor creation");
     }
 
-    if (bh1750_status == SENSOR_OK) {
+    if (bh1750_status == SENSOR_OK)
+    {
         light_monitor = new_sensor_monitor(
             &bh1750, BH1750_READ_INTERVAL_MS, sizeof(float), "light_monitor", save_bh1750);
-    } else {
+    }
+    else
+    {
         ESP_LOGW("main", "BH1750 initialization failed, skipping monitor creation");
     }
 
     ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
-    if (th_monitor) start_sensor_monitoring(th_monitor);
-    if (noise_monitor) start_sensor_monitoring(noise_monitor);
-    if (light_monitor) start_sensor_monitoring(light_monitor);
-    
+    if (th_monitor)
+        start_sensor_monitoring(th_monitor);
+    if (noise_monitor)
+        start_sensor_monitoring(noise_monitor);
+    if (light_monitor)
+        start_sensor_monitoring(light_monitor);
+
     ESP_LOGI("main", "Sistema iniciado. Monitorando sensores e botoes...");
-    
+
     // Timer para cálculo de média móvel a cada 60s
     TimerHandle_t av_timer = xTimerCreate(
-        "av_calculation_timer", pdMS_TO_TICKS(60000), pdTRUE, NULL, av_cal_monitor_timer_callback
-    );
+        "av_calculation_timer", pdMS_TO_TICKS(60000), pdTRUE, NULL, av_cal_monitor_timer_callback);
 
-    if (av_timer != NULL) xTimerStart(av_timer, 0);
-    for (;;) {
+    if (av_timer != NULL)
+        xTimerStart(av_timer, 0);
+    for (;;)
+    {
         if (check_safe_clean_alerts() == ESP_OK)
             alerts_clear_alert();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    
 }
 
 void save_dht11(sensor_base_t *sensor, void *data)
@@ -161,9 +174,9 @@ void save_dht11(sensor_base_t *sensor, void *data)
     if (current_read.temperature >= TEMP_MAX || current_read.temperature <= TEMP_MIN ||
         current_read.humidity >= HUM_MAX || current_read.humidity <= HUM_MIN)
         alert_counter++;
-    else 
+    else
         alert_counter = 0;
-    
+
     if (alert_counter >= DHT_WINDOW_CRITICAL_TOLERANCE)
         alerts_send_alert(ALERT_CRITICAL, "Leitura de temperatura/umidade fora dos limites seguros!");
     else if (alert_counter >= DHT_WINDOW_WARNING_TOLERANCE)
@@ -173,7 +186,7 @@ void save_dht11(sensor_base_t *sensor, void *data)
 void save_ky037(sensor_base_t *sensor, void *data)
 {
     uint16_t *noise_level = (uint16_t *)data;
-    
+
     current_read.noise_level = *noise_level;
     save_sensor_read(&current_read);
 
@@ -183,17 +196,17 @@ void save_ky037(sensor_base_t *sensor, void *data)
         alert_counter++;
     else if (current_read.noise_level >= NOISE_PEAK_LIMIT)
         alert_counter += (1 + NOISE_WINDOW_WARNING_TOLERANCE / NOISE_PEAK_MAX_DURATION); // Contabiliza como múltiplos
-    else 
+    else
         alert_counter = 0;
 
-    if(alert_counter >= NOISE_WINDOW_WARNING_TOLERANCE)
+    if (alert_counter >= NOISE_WINDOW_WARNING_TOLERANCE)
         alerts_send_alert(ALERT_WARNING, "Nível de ruído alto detectado!");
 }
 
 void save_bh1750(sensor_base_t *sensor, void *data)
 {
     float *lux = (float *)data;
-    
+
     current_read.lux = *lux;
     save_sensor_read(&current_read);
 
@@ -210,10 +223,12 @@ void save_bh1750(sensor_base_t *sensor, void *data)
         alerts_send_alert(ALERT_WARNING, "Nível de luz fora dos limites seguros!");
 }
 
-void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
+void av_cal_monitor_timer_callback(TimerHandle_t xTimer)
+{
     compact_sensor_read_t compact_read;
-    
-    if(get_moving_average(&compact_read)) {
+
+    if (get_moving_average(&compact_read))
+    {
         ESP_LOGI("AV_CAL", "Media movel - Temp: %.2f C, Hum: %.2f %%, Lux: %.2f lx, Noise: %.2f",
                  RAW_TO_TEMP(compact_read.temperature),
                  RAW_TO_HUMID(compact_read.humidity),
@@ -224,14 +239,18 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
         time(&now);
         localtime_r(&now, &timeinfo);
 
-        frec.timestamp = (uint32_t)now; 
+        frec.timestamp = (uint32_t)now;
         frec.compact = compact_read;
         flash_buffer_write(buffer, &frec);
-        if(timeinfo.tm_min == 0) {
-            if ( !night_mode && (timeinfo.tm_hour >= NIGHT_START_HOUR || timeinfo.tm_hour < NIGHT_END_HOUR)) {
+        if (timeinfo.tm_min == 0)
+        {
+            if (!night_mode && (timeinfo.tm_hour >= NIGHT_START_HOUR || timeinfo.tm_hour < NIGHT_END_HOUR))
+            {
                 ESP_LOGI("main", "Iniciando modo noturno");
                 night_mode = 1;
-            } else if (night_mode && (timeinfo.tm_hour < NIGHT_START_HOUR || timeinfo.tm_hour >= NIGHT_END_HOUR)) {
+            }
+            else if (night_mode && (timeinfo.tm_hour < NIGHT_START_HOUR || timeinfo.tm_hour >= NIGHT_END_HOUR))
+            {
                 ESP_LOGI("main", "Encerrando modo noturno");
                 night_mode = 0;
             }
@@ -241,40 +260,45 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer) {
 
 void button_callback(int pin, button_event_t event)
 {
-    if (pin == BUTTON_PIN && alert_status == ALERT_CRITICAL) {
+    if (pin == BUTTON_PIN && alert_status == ALERT_CRITICAL)
+    {
         // Durante alerta crítico, botão ativa o snooze
         alerts_snooze(SNOOZE_DURATION_MS);
         return;
     }
 
     uint32_t notify_value = 0;
-    
-    if (event == BUTTON_PRESS_LONG) {
+
+    if (event == BUTTON_PRESS_LONG)
+    {
         notify_value |= EVT_BTN_LONG;
-    } else if (event == BUTTON_PRESS_SHORT) {
+    }
+    else if (event == BUTTON_PRESS_SHORT)
+    {
         notify_value |= EVT_BTN_CLICKED;
     }
-    
+
     xTaskNotify(xMainTaskHandle, notify_value, eSetBits);
 }
 
-esp_err_t check_safe_clean_alerts() {
+esp_err_t check_safe_clean_alerts()
+{
 
-    if (alert_status != ALERT_NONE) {
-        if(night_mode == 1 && current_read.lux > LUX_NIGHT_MAX)
+    if (alert_status != ALERT_NONE)
+    {
+        if (night_mode == 1 && current_read.lux > LUX_NIGHT_MAX)
             return ESP_ERR_INVALID_STATE;
         else if (current_read.lux > LUX_DAY_MAX || current_read.lux < LUX_DAY_MIN)
             return ESP_ERR_INVALID_STATE;
         else if (current_read.temperature > TEMP_MAX || current_read.temperature < TEMP_MIN)
             return ESP_ERR_INVALID_STATE;
-        else if(current_read.humidity > HUM_MAX || current_read.humidity < HUM_MIN)
+        else if (current_read.humidity > HUM_MAX || current_read.humidity < HUM_MIN)
             return ESP_ERR_INVALID_STATE;
         else if (current_read.noise_level >= NOISE_AVG_LIMIT)
             return ESP_ERR_INVALID_STATE;
         else
             return ESP_OK;
-    } 
+    }
 
     return ESP_ERR_NOT_ALLOWED;
-
 }
