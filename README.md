@@ -1,6 +1,6 @@
 # Sistema de Monitoramento Ambiental para Biotério (MVP)
 
-**Solução embarcada completa e integrada para monitoramento contínuo de condições ambientais em salas de criação de ratos**, com foco em parâmetros críticos para reprodução. O sistema monitora temperatura, umidade relativa, iluminação e ruído, com alertas em tempo real e histórico de dados persistente em flash.
+**Solução embarcada para monitoramento contínuo de condições ambientais em salas de criação de ratos**, com foco em parâmetros críticos para reprodução. O sistema monitora temperatura, umidade relativa, iluminação e ruído, com alertas em tempo real e histórico de dados persistente em flash.
 
 ---
 
@@ -8,27 +8,25 @@
 
 ### Sensores Integrados
 
-| Sensor | Parâmetro | Faixa-Alvo | Amostragem | Alerta |
-|--------|-----------|-----------|-----------|--------|
-| **DHT11/DHT22** | Temperatura | 22–26 °C | 2 s (média 1 min) | ≥ 3 leituras fora |
-| **DHT11/DHT22** | Umidade | 40–60 % | 2 s (média 1 min) | ≥ 3 leituras fora |
-| **BH1750FVI** | Iluminância (dia) | 150–300 lux | 10 s | > 5 min fora |
-| **BH1750FVI** | Luz noturna (vazamento) | ~0 lux (tol: ≤ 5 lux) | 10 s | > 2 min acima |
-| **KY-037 (LM393)** | Ruído (score 0–100) | Média < 40–50 | 1 s (RMS 1s) | Picos > 60 por > 3 s |
+| Sensor | Parâmetro | Faixa-Alvo | Amostragem | Alerta | Alarme |
+|--------|-----------|-----------|-----------|--------|--------|
+| **DHT11/DHT22** | Temperatura | 22–26 °C | 2 s | ≥ 5 min | ≥ 10 min |
+| **DHT11/DHT22** | Umidade | 40–60 % | 2 s  | ≥ 5 min | ≥ 10 min |
+| **BH1750FVI** | Iluminância (dia) | 150–300 lux | 10 s | ≥ 2 min | ≥ 5 min |
+| **BH1750FVI** | Luz noturna (vazamento) | ~0 lux (tol: ≤ 5 lux) | 10 s | ≥ 2 min | ≥ 5 min |
+| **KY-037 (LM393)** | Ruído (score 0–100) | Média < 40–50 | 1 s | Picos > 60 por > 3 s | N/A |
 
 ### Atuadores de Alerta
 
-- **LED Amarelo (GPIO 32)**: Aviso – 1–5 min fora dos limites
-- **LED Vermelho (GPIO 26)**: Alarme – > 5 min fora ou múltiplas variáveis críticas
-- **Buzzer PWM (GPIO 15)**: Pulsos periódicos (atenção) ou contínuo (alarme); opção de snooze por 5 min
-- **Display OLED**: Exibição em tempo real de valores, status e tendências
+- **LED Amarelo (GPIO 32)**: Aviso
+- **LED Vermelho (GPIO 26)**: Alarme
+- **Buzzer PWM (GPIO 15)**: Pulsos periódicos (quando alarme); opção de snooze por 10 min
 
 ### Processamento de Dados
 
-- **Armazenamento em Flash**: Buffer circular em NVS (24–48 h de histórico)
-- **Conformidade**: Cálculo automático de % de tempo dentro das faixas (meta: ≥ 85%)
-- **Média Móvel**: Suavização de 1 min com histerese de 3 leituras
-- **Interfaceamento UART/JSON**: Exportação de dados, configuração remota e sincronização de horário
+- **Armazenamento em Flash**: Buffer circular em NVS (24 h de histórico)
+- **Média Móvel**: Suavização de 1 min
+- **Interfaceamento UART**: Exportação de dados como JSON
 - **Máquina de Estados**: Transições automáticas: OK → Atenção → Alarme → OK
 
 ---
@@ -57,70 +55,40 @@
 │  ┌──────────────────┐     ┌───────────────────────────────┐    │
 │  │  Sensores I/O    │     │  Camada de Processamento      │    │
 │  ├──────────────────┤     ├───────────────────────────────┤    │
-│  │ • DHT11 (GPIO23) │     │ • FreeRTOS Tasks              │    │
-│  │ • BH1750 (I2C)   │     │ • Software Timers             │    │
-│  │ • KY-037 (ADC5)  │     │ • State Machine (4 estados)   │    │
-│  │ • Button (GPIO22)│     │ • Média Móvel & Histerese     │    │
-│  └──────────────────┘     │ • Buffer Circular (Flash)     │    │
+│  │ • DHT11 (GPIO23) │────→│ • FreeRTOS Tasks              │    │
+│  │ • BH1750 (I2C)   │────→│ • Software Timers (2s/10s/1s) │    │
+│  │ • KY-037 (ADC5)  │────→│ • Sensor Monitor (async)      │    │
+│  │ • Button (GPIO22)│────→│ • State Machine (3 estados)   │    │
+│  └──────────────────┘     │ • Sensor History (média/comp) │    │
+│                           │ • Alerts System (Queue)       │    │
+│  ┌──────────────────┐     └───────────────────────────────┘    │
+│  │  Atuadores       │              ↕ Callbacks                 │
+│  ├──────────────────┤     ┌───────────────────────────────┐    │
+│  │ • LED Vermelho   │←────│  Interface & Persistência     │    │
+│  │ • LED Amarelo    │←────├───────────────────────────────┤    │
+│  │ • Buzzer (PWM)   │←────│ • Exportação JSON             │    │
+│  │ • OLED Display   │←────│ • Flash Buffer (NVS circular) │    │
+│  └──────────────────┘     │ • Time Sync (NTP fallback)    │    │
 │                           └───────────────────────────────┘    │
-│  ┌──────────────────┐     ┌───────────────────────────────┐    │
-│  │  Atuadores       │     │  Interface & Persistência     │    │
-│  ├──────────────────┤     ├───────────────────────────────┤    │
-│  │ • LED Vermelho   │     │ • UART / JSON Handler         │    │
-│  │ • LED Amarelo    │     │ • NVS Flash Storage           │    │
-│  │ • Buzzer (PWM)   │     │ • Sync NTP (se WiFi)          │    │
-│  │ • Histerese      │     │ • Exportação CSV/JSON         │    │
-│  └──────────────────┘     └───────────────────────────────┘    │
+│                                                                │
+│  Fluxo: Sensores → Monitor → History → StateMachine → Alerts   │
+│         ↑                                            ↓         │
+│         └────────── Flash Buffer (24h) ──────────────┘         │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-### Máquina de Estados (4 Estados)
-
-```
-┌──────────────┐
-│ STATE_INIT   │  Inicialização e testes de sensores
-│ (PowerOn)    │  • Testa I2C com BH1750
-│              │  • Valida DHT11 e KY-037
-└─────┬────────┘  • Sincroniza relógio (NTP)
-      │
-      ├──(sucesso)──→ STATE_NORMAL ◄──┐
-      │               (operação)      │
-      │               • Leitura contínua
-      │               • Dentro das faixas
-      │               • LED desligado/verde
-      │                 │
-      │                 │ (fora de limite)
-      │                 ↓
-      │              STATE_ALERT
-      │              (alerta)
-      │              • 1+ variáveis fora
-      │              • 1–5 min: LED amarelo
-      │              • > 5 min: LED vermelho
-      │              • Buzzer ativo
-      │                 │
-      │                 └─(volta ao normal)→┘
-      │
-      └──(erro)──→ STATE_ERROR
-                   (falha)
-                   • Sensor não responde
-                   • LED vermelho piscante
-                   • Buzzer contínuo
-                   • Tenta recuperação automática
-```
-
 ### Fluxo Operacional Detalhado
 
-#### **Fase de Inicialização (STATE_INIT → STATE_NORMAL)**
+#### **Fase de Inicialização **
 1. FreeRTOS scheduler inicia
 2. I2C configurado, BH1750 testado
 3. DHT11 e KY-037 inicializados
-4. NVS flash verificado e formatado se necessário
+4. NVS flash verificado
 5. NTP sync iniciado (se conectado a WiFi)
 6. Tasks e Software Timers criadas
-7. Transição para STATE_NORMAL
 
-#### **Operação Normal (STATE_NORMAL)**
+#### **Operação Normal (ALERT_NONE)**
 1. **Timer periodicidade**:
    - DHT11: a cada 2 s
    - BH1750: a cada 10 s
@@ -131,9 +99,9 @@
    - Compara com limites
 3. **Decisão**:
    - Se dentro → LED desligado, nenhum alerta
-   - Se fora por ≥ 3 leituras → STATE_ALERT
+   - Se fora por ≥ X leituras → ALERT_WARNING
 4. **Persistência**:
-   - A cada 5 min: escreve agregados em NVS
+   - A cada 1 min: escreve agregados em NVS
 
 #### **Alerta (STATE_ALERT)**
 1. **Escalada temporal**:
@@ -160,125 +128,6 @@
    - Mantém-se em STATE_ERROR se falha persistir
 
 ---
-
-## Módulos de Software
-
-### 1. **Drivers de Sensores** (`src/` + `include/`)
-
-#### `dht11_sensor.h / dht11_sensor.c`
-- Protocolo 1-Wire com DHT11/DHT22
-- Retorna `dht11_data_t { temperature, humidity }`
-- Intervalo: 2 s (configurável em `env.h`)
-- Implementa `sensor_base_t` interface
-
-#### `bh1750fvi_sensor.h / bh1750fvi_sensor.c`
-- I2C com modo de sensibilidade automática
-- Retorna lux (0–54000 lux)
-- Suporta ajuste de sensibilidade (High, Medium, Low)
-- Intervalo: 10 s (configurável)
-
-#### `KY-037_sensor.h / KY-037_sensor.c`
-- ADC do microfone LM393
-- Cálculo RMS em janela de 1 s
-- Score 0–100 (linear do ADC 0–4095)
-- Intervalo: 1 s (configurável)
-
-### 2. **Monitoramento Periódico** (`sensor_monitor.h / sensor_monitor.c`)
-- Wrapper que encapsula leitura assíncrona
-- FreeRTOS Software Timers + Tasks
-- Callbacks após cada leitura bem-sucedida
-- Máximo 3 sensores simultâneos
-
-**Exemplo de uso:**
-```c
-sensor_monitor_t* monitor = new_sensor_monitor(
-    &dht11_sensor,          // Sensor base
-    2000,                   // Intervalo 2 s (em ms)
-    sizeof(dht11_data_t),   // Tamanho dos dados
-    "DHT11",                // Nome
-    on_dht11_read           // Callback
-);
-start_sensor_monitoring(monitor);
-```
-
-### 3. **Histórico e Conformidade** (`sensor_history.h / sensor_history.c`)
-- Estrutura `full_sensor_read_t { temperature, humidity, lux, noise_level }`
-- Buffer circular com média móvel
-- Função `compute_compliance_percentage()`:
-  - Calcula % de amostras dentro das faixas em 24 h
-  - Meta: ≥ 85%
-- Função `get_min_max_avg()` para estatísticas
-
-### 4. **Sistema de Alertas** (`alerts.h / alerts.c`)
-- Estados: `ALERT_NONE`, `ALERT_WARNING`, `ALERT_CRITICAL`
-- Controla LEDs (GPIO) e Buzzer (PWM/LEDC)
-- Queue assíncrona de alertas
-- Função `alerts_snooze(duration_ms)` para silenciar temporariamente
-
-**Exemplo:**
-```c
-alerts_send_alert(ALERT_WARNING, "Temperature out of range!");
-alerts_snooze(300000);  // Silencia por 5 min
-```
-
-### 5. **Máquina de Estados** (`state_machine.h / state_machine.c`)
-- Estados: `STATE_INIT`, `STATE_NORMAL`, `STATE_ALERT`, `STATE_ERROR`
-- Eventos: `EVENT_INIT_COMPLETE`, `EVENT_SENSOR_OUT_OF_RANGE`, `EVENT_RECOVERY`, etc.
-- Callbacks de transição, entrada e saída de estados
-- Sincronização com mutex FreeRTOS
-- Proteção contra transições inválidas
-
-**Transições válidas:**
-```
-STATE_INIT → STATE_NORMAL ou STATE_ERROR
-STATE_NORMAL ↔ STATE_ALERT (bidirecional)
-STATE_NORMAL → STATE_ERROR (falha crítica)
-STATE_ERROR → STATE_NORMAL (após recuperação)
-Qualquer estado → STATE_INIT (reset)
-```
-
-### 6. **Persistência em Flash** (`lib/flash_buffer.h / flash_buffer.c`)
-- NVS (Non-Volatile Storage) do ESP-IDF
-- Buffer circular com até 48 h de dados (configurável)
-- Função `flash_buffer_write()` atômicas
-- Função `flash_buffer_read()` com ordenação temporal
-- Recovery automático em boot
-
-**Exemplo:**
-```c
-flash_buffer_t* buffer = flash_buffer_create("sensor_data", 1000);
-flash_buffer_write(buffer, &reading);  // Escreve automaticamente na próxima oportunidade
-```
-
-### 7. **Interface UART/JSON** (`uart_json_handler.h / uart_json_handler.c`)
-- Comunicação serial (115200 baud padrão)
-- Comandos estruturados em JSON
-- Suporta: `get_status`, `export_data`, `set_limits`, `snooze_alert`
-- Exemplo de resposta:
-```json
-{
-  "cmd": "get_status",
-  "temp": 24.5,
-  "humidity": 52.0,
-  "lux": 280,
-  "noise": 45,
-  "state": "NORMAL",
-  "compliance": 92.5,
-  "timestamp": "2025-12-13T14:30:45Z"
-}
-```
-
-### 8. **Sincronização de Tempo** (`time_sync.h / time_sync.c`)
-- NTP (Network Time Protocol) se WiFi disponível
-- Fallback para relógio interno do ESP32
-- Timestamps precisos para cada leitura
-- Conversão local para horário padrão
-
-### 9. **Driver de Botão** (`button_driver.h / button_driver.c`)
-- Debounce de 50 ms
-- Detecção de clique (< 500 ms) vs pressionamento longo (≥ 2000 ms)
-- Notificações via `xTaskNotify()` para main task
-- Estados: single click, long press
 
 ---
 
@@ -342,82 +191,6 @@ ESP32 DevKit / ESP32-S2 Saola
 │ GPIO3 (RX)  (115200 baud)           │
 │                                     │
 └─────────────────────────────────────┘
-```
-
----
-
-## Estrutura do Projeto
-
-```
-emebedded_sys_2025.2/
-├── CMakeLists.txt                 # Build configuration (ESP-IDF)
-├── platformio.ini                 # PlatformIO config (alternativo)
-├── README.md                      # Este arquivo
-├── LICENSE                        # Licença MIT
-├── sdkconfig*                     # Configurações ESP-IDF para diferentes placas
-│
-├── components/                    # Componentes reutilizáveis
-│   ├── dht/                      # DHT11/22 (reutilizável)
-│   │   ├── CMakeLists.txt
-│   │   ├── dht.h
-│   │   ├── dht.c
-│   │   └── LICENSE
-│   │
-│   └── esp_idf_lib_helpers/      # Helpers de compatibilidade
-│       ├── CMakeLists.txt
-│       └── esp_idf_lib_helpers.h
-│
-├── include/                       # Headers do projeto principal
-│   ├── alerts.h                  # Sistema de alertas
-│   ├── bh1750fvi_sensor.h        # Driver BH1750
-│   ├── button_driver.h           # Driver do botão
-│   ├── dht11_sensor.h            # Wrapper DHT11
-│   ├── env.h                     # Configurações e limites
-│   ├── flash_record.h            # Persistência (legado)
-│   ├── KY-037_sensor.h           # Driver ruído
-│   ├── sensor_base.h             # Interface base dos sensores
-│   ├── sensor_history.h          # Histórico e conformidade
-│   ├── sensor_monitor.h          # Monitoramento periódico
-│   ├── state_machine.h           # Máquina de estados
-│   ├── time_sync.h               # Sincronização NTP
-│   └── uart_json_handler.h       # Interface UART/JSON
-│
-├── lib/                          # Bibliotecas externas
-│   ├── bh1750/                  # BH1750 (light sensor lib)
-│   │   ├── bh1750.h
-│   │   └── bh1750.c
-│   │
-│   └── flash_buffer/            # Buffer persistente
-│       ├── flash_buffer.h
-│       ├── flash_buffer.c
-│       └── README.md
-│
-├── src/                         # Código principal
-│   ├── CMakeLists.txt
-│   ├── main.c                  # Entry point + task main
-│   ├── alerts.c                # Sistema de alertas
-│   ├── bh1750fvi_sensor.c      # Driver BH1750
-│   ├── button_driver.c         # Driver botão
-│   ├── dht11_sensor.c          # Wrapper DHT11
-│   ├── KY-037_sensor.c         # Driver ruído (ADC)
-│   ├── sensor_history.c        # Histórico
-│   ├── sensor_monitor.c        # Monitoramento
-│   ├── state_machine.c         # Máquina de estados
-│   ├── time_sync.c             # Sync NTP
-│   └── uart_json_handler.c     # UART/JSON
-│
-├── main/                       # ESP-IDF main component
-│   └── idf_component.yml
-│
-├── docs/                       # Documentação
-│   ├── project_6.md           # Especificação original
-│   ├── STATE_MACHINE_USAGE.md # Uso da máquina de estados
-│   └── images/                # Diagramas
-│       ├── diagrama_de_estados.svg
-│       └── ...
-│
-└── test/                       # Testes (futuro)
-    └── README
 ```
 
 ---
@@ -532,47 +305,24 @@ pio device monitor
   - LED vermelho + buzzer contínuo → alarme crítico (> 5 min ou múltiplas)
 
 - **Interação com Botão**:
-  - Clique curto (< 500 ms): Ativa snooze (buzzer silencia por 5 min)
-  - Pressionamento longo (≥ 2 s): Reset manual do estado de alerta
+  - **Primeiros 5 segundos (durante boot)**: Pressione por ≥ 2s para exportar dados em JSON e reiniciar
+  - **Durante operação normal**: Pressione para ativar snooze (buzzer silencia por 5 minutos se em ALERT_CRITICAL)
 
-#### Exportação de Dados
+#### Exportação de Dados via Botão
 
-Via UART, envie comando JSON:
-```json
-{"cmd": "export_data", "format": "csv", "duration_hours": 24}
+**Durante os primeiros 5 segundos após boot**, pressione o botão:
+
+- **Pressionamento longo (≥ 2 segundos)**: Exporta TODOS os registros armazenados em flash via UART (formato JSON) e reinicia o dispositivo
+- **Pressionamento curto (< 2 segundos)**: Durante operação normal, ativa **snooze de 5 minutos** (buzzer silencia se em estado ALERT_CRITICAL)
+
+**Exemplo de saída JSON** (via Serial Monitor a 115200 baud):
 ```
-
-Resposta (amostra de 24 h):
-```csv
-timestamp,temperature,humidity,lux,noise_score,state
-2025-12-13T00:00:00Z,23.2,48.5,2,35,NORMAL
-2025-12-13T01:00:00Z,23.1,49.2,1,32,NORMAL
-...
-2025-12-13T23:00:00Z,24.8,51.3,280,48,ALERT
-Min/Max/Avg: T=22.1/26.3/24.5°C, RH=38/62/50.5%, Lux=0/320/145, Noise=25/78/45
-Conformidade: 88.5% (acima do alvo de 85%)
-```
-
-### 5. Monitoramento em Tempo Real
-
-**Via Serial Monitor** (VS Code):
-- Conecte via porta USB
-- Abra a paleta (Ctrl+Shift+P) e procure "Serial Monitor"
-- Taxa: 115200 baud
-
-**Via Script Python** (opcional):
-```python
-import serial
-import json
-
-ser = serial.Serial('/dev/ttyUSB0', 115200)
-
-while True:
-    if ser.in_waiting > 0:
-        line = ser.readline().decode('utf-8').strip()
-        if line.startswith('{'):
-            data = json.loads(line)
-            print(f"T={data['temp']}°C, RH={data['humidity']}%, Lux={data['lux']}")
+[
+  {"timestamp": 1702473600, "temperature": 23.2, "humidity": 48.5, "lux": 2, "noise": 35},
+  {"timestamp": 1702477200, "temperature": 23.1, "humidity": 49.2, "lux": 1, "noise": 32},
+  ...
+  {"timestamp": 1702560000, "temperature": 24.8, "humidity": 51.3, "lux": 280, "noise": 48}
+]
 ```
 
 ---
@@ -615,27 +365,12 @@ Em `include/time_sync.h`, configure servidor NTP:
 
 ---
 
-## Critérios de Aceite (MVP)
-
-- ☐ **Leituras Estáveis**: T/UR + Lux + Ruído por 24 h sem erros
-- ☐ **Display de Status**: Exibe valores atuais + estado (OK/Atenção/Alarme)
-- ☐ **Alertas Automáticos**: LED/Buzzer disparam conforme regras (≥ 3 leituras, > 5 min, histerese)
-- ☐ **Persistência**: Dados salvos em flash; recuperação automática em reboot
-- ☐ **Exportação**: CSV/JSON com mín/máx/média, % conformidade e timestamps
-- ☐ **Interação**: Botão permite snooze/reset de alertas
-- ☐ **Conformidade**: Cálculo automático: ≥ 85% de tempo dentro das faixas = OK
-- ☐ **Documentação**: Diagrama de pinagem, instalação e limites configurados
-
----
-
 ## Troubleshooting
 
 ### Problema: BH1750 não responde (I2C error)
 **Solução:**
 1. Verifique conexões I2C (SDA, SCL, GND, VCC)
 2. Confira pull-ups 4.7 kΩ nas linhas I2C
-3. Use `i2cdetect -y 1` (Linux) para verificar endereço 0x23
-4. Tente alterar velocidade I2C em `env.h`
 
 ### Problema: DHT11 leituras falhando (checksum error)
 **Solução:**
@@ -647,13 +382,13 @@ Em `include/time_sync.h`, configure servidor NTP:
 ### Problema: Buzzer não faz som
 **Solução:**
 1. Verifique GPIO 15 está livre (não conflita com flash)
-2. Teste PWM direto: `ledcWrite(0, 128)` em `alerts.c`
+2. Teste PWM direto: `set_buzzer(true)` em `alerts.c`
 3. Se buzzer passivo, verifique polaridade e tensão (3.3V vs 5V)
 4. Use amplificador externo se sinal fraco
 
 ### Problema: Botão não responde
 **Solução:**
-1. Teste com `digitalWrite(GPIO_22, HIGH)` (pull-up interno)
+1. Teste com `gpio_set_level(15, 1)` (pull-up interno)
 2. Verifique debounce de 50 ms em `button_driver.c`
 3. Monitore ISR em logs
 4. Use multímetro para confirmar press/release
@@ -673,9 +408,9 @@ idf.py erase-otadata
 ##  Referências
 
 ### Datasheets de Sensores
-- [DHT11/DHT22 Datasheet](https://www.adafruit.com/datasheets/DHT22.pdf)
-- [BH1750FVI Datasheet](https://datasheet.lcsc.com/lcsc/2009261808_ROHM-BH1750FVI-TR_C39381.pdf)
-- [LM393 Comparator (KY-037)](https://datasheets.maximintegrated.com/en/ds/LM393.pdf)
+- [DHT11/DHT22 Datasheet](docs/datasheets/DHT11_Datasheet.pdf)
+- [BH1750FVI Datasheet](docs/datasheets/BH1750FVI%20-%20Sensor%20ICs.pdf)
+- [LM393 Comparator (KY-037)](docs/datasheets/KY-037-datasheet.pdf)
 
 ### Documentação ESP32
 - [ESP32 Technical Reference Manual](https://espressif-docs.readthedocs.io/projects/esp32-technical-reference-manual/en/latest/)
@@ -705,7 +440,7 @@ Para contribuir com melhorias:
 1. **Fork** o repositório
 2. **Crie um branch** com descrição: `feature/nova-funcionalidade`
 3. **Commit** mensagens claras em português
-4. **Teste** em hardware (24 h mínimo)
+4. **Teste** em hardware
 5. **Pull Request** com documentação de mudanças
 
 ### Checklist de Contribuição
@@ -721,8 +456,7 @@ Para contribuir com melhorias:
 
 Para dúvidas ou problemas:
 1. Verifique este README e [docs/](docs/) detalhadamente
-2. Consulte [docs/STATE_MACHINE_USAGE.md](docs/STATE_MACHINE_USAGE.md) para máquina de estados
-3. Abra uma **Issue** no GitHub com:
+2. Abra uma **Issue** no GitHub com:
    - Placa ESP32 utilizada (DevKit, Saola, etc.)
    - Logs do serial monitor
    - Configuração de limites aplicada
