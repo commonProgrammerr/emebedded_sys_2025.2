@@ -74,11 +74,11 @@ void app_main(void)
     // Inicializa botão com interrupção GPIO e callback assíncrono
     button_init(&btn_nav, (gpio_num_t)BUTTON_PIN, button_callback, xMainTaskHandle);
 
+    // aguarda 5s por evento do botão, se detectar faz reboot
     for (uint8_t i = 0; i < 10; i++)
     {
         gpio_set_level(WARNING_STATE_GPIO, !(i % 2));
-        // aguarda 5s por evento do botão, se detectar faz reboot
-        if (xTaskNotifyWait(0, UINT32_MAX, &btn_notification_value, pdMS_TO_TICKS(500)) == pdTRUE)
+        if (xTaskNotifyWait(0, UINT32_MAX, &btn_notification_value, pdMS_TO_TICKS(600)) == pdTRUE)
         {
             if (btn_notification_value & EVT_BTN_LONG)
             {
@@ -94,8 +94,7 @@ void app_main(void)
     init_history_system(60);
 
     // Sincroniza hora com NTP via WiFi
-    ret = sync_time_with_ntp("90225", "Segred0%%@2444", NULL, NULL);
-    ESP_ERROR_CHECK(ret);
+    sync_time_with_ntp("90225", "Segred0%%@2444", NULL, NULL);
 
     sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
 
@@ -229,7 +228,7 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer)
 
     if (get_moving_average(&compact_read))
     {
-        ESP_LOGI("AV_CAL", "Media movel - Temp: %.2f C, Hum: %.2f %%, Lux: %.2f lx, Noise: %.2f",
+        ESP_LOGI("AV_CAL", "Media movel - Temp: %.2f C, Hum: %.2f %%, Lux: %.2f lx, Noise: %04u",
                  RAW_TO_TEMP(compact_read.temperature),
                  RAW_TO_HUMID(compact_read.humidity),
                  RAW_TO_LUX(compact_read.lux),
@@ -283,6 +282,7 @@ void button_callback(int pin, button_event_t event)
 
 esp_err_t check_safe_clean_alerts()
 {
+    static uint8_t hysteresis;
 
     if (alert_status != ALERT_NONE)
     {
@@ -296,8 +296,13 @@ esp_err_t check_safe_clean_alerts()
             return ESP_ERR_INVALID_STATE;
         else if (current_read.noise_level >= NOISE_AVG_LIMIT)
             return ESP_ERR_INVALID_STATE;
-        else
+        else if (hysteresis >= 5)
+        {
+            hysteresis = 0;
             return ESP_OK;
+        }
+        else
+            hysteresis++;
     }
 
     return ESP_ERR_NOT_ALLOWED;
