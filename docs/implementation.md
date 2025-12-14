@@ -17,18 +17,28 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
 ### Faixas de Operação
 
 **Limites de Temperatura:**
-- Zona Segura: 18°C a 26°C
-- Zona de Alerta (Warning): 16°C a 18°C ou 26°C a 28°C
-- Zona Crítica: < 16°C ou > 28°C
+- Zona Segura: 22°C a 26°C
+- Zona de Alerta (Warning): Violação por 5 minutos (30 leituras consecutivas a cada 10s)
+- Zona Crítica: Violação por 10 minutos (60 leituras consecutivas a cada 10s)
 
 **Limites de Umidade:**
-- Zona Segura: 40% a 70%
-- Zona de Alerta (Warning): 30% a 40% ou 70% a 80%
-- Zona Crítica: < 30% ou > 80%
+- Zona Segura: 40% a 60%
+- Zona de Alerta (Warning): Violação por 5 minutos (30 leituras consecutivas)
+- Zona Crítica: Violação por 10 minutos (60 leituras consecutivas)
 
-**Outros Sensores:**
-- **Luminosidade**: 0 a 65535 lux (sensor BH1750FVI)
-- **Ruído**: 0 a 4095 (ADC 12-bit do ESP32)
+**Limites de Luminosidade:**
+- Modo Diurno (6h-18h): 150 a 300 lux
+- Modo Noturno (18h-6h): 0 a 5 lux (tolerância para vazamento de luz)
+- Zona de Alerta (Warning): Violação por 2 minutos (12 leituras)
+- Zona Crítica: Violação por 5 minutos (30 leituras)
+
+**Limites de Ruído:**
+- Nível Médio Máximo: 2100 (ADC raw)
+- Pico Instantâneo: 3048 (ADC raw)
+- Zona de Alerta (Warning): Violação por 40 segundos
+- Picos são contabilizados como múltiplas violações
+
+
 
 ## Funcionalidades Implementadas
 
@@ -40,10 +50,15 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
 
 ### Sistema de Alertas
 - **3 Estados do Sistema**:
-  - `STATE_NORMAL`: LED verde aceso, condições dentro dos limites
-  - `STATE_WARNING`: LED amarelo piscando (2 Hz), temperatura ou umidade próximas aos limites
-  - `STATE_CRITICAL`: LED vermelho + buzzer intermitente, violação de limites críticos
-- **Lógica de Histerese**: Requer 3 leituras consecutivas fora dos limites para mudar de estado (previne alarmes falsos)
+  - `ALERT_NONE`: Sem alertas, condições dentro dos limites
+  - `ALERT_WARNING`: LED amarelo aceso, violação de limites por período definido
+  - `ALERT_CRITICAL`: LED vermelho + buzzer intermitente (500ms on / 30s off), violação crítica prolongada
+- **Lógica de Janela Temporal**: Requer múltiplas leituras consecutivas fora dos limites antes de ativar alerta
+  - DHT11 (Temp/Umidade): 30 leituras para WARNING (5min), 60 para CRITICAL (10min)
+  - BH1750 (Luz): 12 leituras para WARNING (2min), 30 para CRITICAL (5min)
+  - KY-037 (Ruído): 40 segundos acumulados para WARNING
+- **Modo Noturno Automático**: Sistema detecta período 18h-6h e aplica limites noturnos de luz (0-5 lux)
+- **Snooze de Alertas**: Durante alerta crítico, botão ativa snooze de 5 minutos (silencia buzzer temporariamente)
 
 ### Armazenamento e Histórico
 - **Flash Buffer Circular**: 1440 posições (24h com 1 amostra/minuto)
@@ -52,11 +67,14 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
 - **Timestamping**: Cada amostra tem timestamp Unix desde boot ou NTP
 
 ### Interface e Controle
-- **Botão de Navegação**: GPIO 22 com debouncing e detecção de eventos
-  - **Click Simples**: Evento de teste (atualmente dispara reboot)
-  - **Pressão Longa (>2s)**: Dump completo de dados via UART em JSON + reset
-- **UART JSON**: Protocolo de comunicação para extração de dados históricos
-- **WiFi + NTP**: Sincronização automática de horário na inicialização
+- **Botão de Navegação**: GPIO 22 com debouncing (50ms) e detecção de eventos
+  - **Click Curto (<500ms)**: Evento de teste (funcionalidade reservada)
+  - **Click Normal (500ms-2s)**: Funcionalidade reservada
+  - **Pressão Longa (>2s)**: Dump completo de dados via UART em JSON + limpa flash + restart
+  - **Durante Alerta Crítico**: Qualquer pressão ativa snooze de 5 minutos
+- **UART JSON**: Protocolo de comunicação para extração de dados históricos (formato array JSON)
+- **WiFi + NTP**: Sincronização automática de horário na inicialização (até 5 tentativas de reconexão)
+- **Modo Noturno**: Detecção automática de período noturno (18h-6h) com limites de luz ajustados
 
 ## Arquitetura do Sistema
 
@@ -65,9 +83,9 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
 ```
 ┌────────────────────────────────────────────────────────────┐
 │                     app_main (Task)                        │
-│  - Inicializa sistema (NVS, WiFi, NTP, sensores)          │
-│  - Aguarda eventos de botão (Task Notification)           │
-│  - Cria tasks de monitoramento para cada sensor           │
+│  - Inicializa sistema (NVS, WiFi, NTP, sensores)           │
+│  - Aguarda eventos de botão (Task Notification)            │
+│  - Cria tasks de monitoramento para cada sensor            │
 └────────────────────────────────────────────────────────────┘
                             │
             ┌───────────────┼───────────────┐
@@ -91,25 +109,26 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
                             ▼
 ┌────────────────────────────────────────────────────────────┐
 │            Sensor History System (RAM)                     │
-│  - Buffer circular de 60 amostras compactadas             │
-│  - Cálculo de média móvel a cada 60s                      │
-│  - Quando cheio, salva no flash_buffer                    │
+│  - Buffer circular de 60 amostras compactadas              │
+│  - Cálculo de média móvel a cada 60s                       │
+│  - Quando cheio, salva no flash_buffer                     │
 └────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌────────────────────────────────────────────────────────────┐
 │         Flash Buffer System (NVS Persistent)               │
-│  - 1440 registros flash_record_t (24h de histórico)       │
-│  - Cada registro: timestamp + compact_sensor_read_t       │
-│  - Sobrevive a resets e power-off                         │
+│  - 1440 registros flash_record_t (24h de histórico)        │
+│  - Cada registro: timestamp + compact_sensor_read_t        │
+│  - Sobrevive a resets e power-off                          │
 └────────────────────────────────────────────────────────────┘
                             │
                             ▼
             ┌──────────────────────────────┐
-            │   Alert Logic Task           │
-            │  - Recebe sensor readings    │
-            │  - Calcula estado do sistema │
+            │   Alert Watchdog Task        │
+            │  - Recebe notificações de    │
+            │    mudança de estado         │
             │  - Controla LEDs e Buzzer    │
+            │  - Gerencia snooze           │
             └──────────────────────────────┘
 ```
 
@@ -117,10 +136,12 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
 
 1. **Aquisição**: Cada sensor é lido periodicamente por task dedicada (Software Timer + Task Notification)
 2. **Callback**: Função `save_<sensor>()` atualiza estrutura `current_read` com novos valores
-3. **Histórico RAM**: Dados salvos em buffer circular de 60 amostras (`sensor_history`)
-4. **Média Móvel**: Timer de 60s calcula média das últimas 60 amostras
-5. **Persistência**: Média salva em `flash_buffer` (NVS) com timestamp
-6. **Alertas**: Task de alerta avalia condições e atualiza LEDs/buzzer conforme estado
+3. **Avaliação de Alertas**: Cada callback mantém contador de violações e dispara alerta quando threshold é atingido
+4. **Histórico RAM**: Dados salvos em buffer circular de 60 amostras (`sensor_history`)
+5. **Média Móvel**: Timer de 60s calcula média das últimas 60 amostras
+6. **Detecção de Modo Noturno**: A cada hora (quando `tm_min == 0`), verifica se é período noturno (18h-6h)
+7. **Persistência**: Média salva em `flash_buffer` (NVS) com timestamp Unix
+8. **Gerenciamento de Alertas**: Task `task_alert` responde a notificações, controla LEDs/buzzer e gerencia snooze
 
 ### Estruturas de Dados Principais
 
@@ -165,17 +186,18 @@ typedef struct {
 
 #### Sensores
 - **GPIO 23**: DHT11 Data (temperatura e umidade)
-- **GPIO 21/22**: I2C (SDA/SCL) para BH1750FVI (luminosidade)
-  - Endereço I2C: `0x23` ou `0x5C` (configurável via pino ADDR)
+- **I2C para BH1750FVI** (luminosidade):
+  - **ESP32 WROOM**: SDA=GPIO 21, SCL=GPIO 19
+  - **ESP32-S2**: SDA=GPIO 21, SCL=GPIO 20
+  - Endereço I2C: `0x23` (BH1750_I2C_ADDR_LOW)
 - **GPIO 33**: KY-037 Analog Out (ADC1_CH5 - nível de ruído)
-- **GPIO 34**: KY-037 Digital Out (opcional, não utilizado)
+- **KY-037 Digital Out**: Não utilizado nesta implementação
 
 #### Indicadores e Controle
-<!-- - **GPIO 16**: LED Verde (Estado Normal) -->
-- **GPIO 17**: LED Amarelo (Estado Warning)
-- **GPIO 5**: LED Vermelho (Estado Crítico)
-- **GPIO 18**: Buzzer PWM (LEDC Channel 0, 4 kHz)
-- **GPIO 22**: Botão de Navegação (pull-up interno, falling edge interrupt)
+- **GPIO 32**: LED Amarelo (Estado Warning)
+- **GPIO 26**: LED Vermelho (Estado Crítico)
+- **GPIO 34**: Buzzer PWM (LEDC Channel 0, Timer 0, 2 kHz, 10-bit resolution)
+- **GPIO 22**: Botão de Navegação (pull-up interno, any edge interrupt com debouncing)
 
 #### Comunicação
 - **GPIO 1/3**: UART0 TX/RX (USB serial, 115200 baud)
@@ -301,9 +323,9 @@ LED Vermelho(+) → GPIO 5  → Resistor → GND
 
 **Buzzer Ativo (ou Passivo com PWM):**
 ```
-Buzzer (+) → GPIO 18
+Buzzer (+) → GPIO 34
 Buzzer (-) → GND
-(Para buzzer passivo, o sistema gera PWM de 4 kHz)
+(Para buzzer passivo, o sistema gera PWM de 2 kHz, duty cycle 50%)
 ```
 
 **Botão de Navegação:**
@@ -336,16 +358,30 @@ pio device monitor -b 115200
 4. Clicar em "Upload" (→) para gravar
 5. Clicar em "Serial Monitor" (🔌) para ver logs
 
-#### Configuração WiFi
+#### Configuração WiFi (Obrigatório para Timestamps Absolutos)
 
 Editar em `src/main.c` a chamada de `sync_time_with_ntp()`:
 
 ```c
 // Linha ~98 em main.c
 ret = sync_time_with_ntp("SEU_SSID", "SUA_SENHA", NULL, NULL);
+// Exemplos de timezone e servidor NTP (opcionais, usa defaults se NULL):
+// ret = sync_time_with_ntp("SSID", "SENHA", "BRT3", "a.st1.ntp.br");
 ```
 
-**Nota**: Se WiFi não estiver disponível, o sistema funcionará normalmente mas timestamps serão relativos ao boot (não Unix time absoluto).
+**Parâmetros:**
+- `ssid`: Nome da rede WiFi 2.4 GHz (ESP32 não suporta 5 GHz)
+- `password`: Senha da rede (mínimo WPA2-PSK)
+- `timezone`: String de timezone (NULL = usa padrão do sistema)
+- `ntp_server`: Servidor NTP (NULL = usa pool.ntp.org)
+
+**Comportamento de Conexão:**
+- Sistema tenta conectar até 5 vezes com intervalo entre tentativas
+- Se falhar, retorna `ESP_FAIL` mas sistema continua operando
+- Timestamps sem WiFi: contagem de segundos desde boot (não é Unix time)
+- WiFi é desconectado após sincronização NTP para economizar energia
+
+**Nota**: Sem WiFi, modo noturno não funcionará pois depende de hora do dia real.
 
 ### 4. Operação do Sistema
 
@@ -373,39 +409,53 @@ O sistema opera automaticamente:
 
 #### Estados dos Indicadores
 
-**LED Verde Aceso (Estado Normal):**
-- Temperatura: 18°C a 26°C
-- Umidade: 40% a 70%
+**Nenhum LED Aceso (Estado Normal - ALERT_NONE):**
+- Temperatura: 22°C a 26°C
+- Umidade: 40% a 60%
+- Luminosidade: 150-300 lux (dia) ou 0-5 lux (noite)
+- Ruído: < 2100 (sem picos > 3048)
 - Sistema operando dentro dos limites seguros
 
-**LED Amarelo Piscando 2 Hz (Estado Warning):**
-- Temperatura: 16-18°C ou 26-28°C
-- Umidade: 30-40% ou 70-80%
-- Condições próximas aos limites, atenção necessária
-- Requer 3 leituras consecutivas para ativar
+**LED Amarelo Aceso (Estado Warning - ALERT_WARNING):**
+- Temperatura ou umidade fora dos limites por 5 minutos (30 leituras consecutivas)
+- Luminosidade fora dos limites por 2 minutos (12 leituras consecutivas)
+- Ruído elevado acumulado por 40 segundos
+- Sem buzzer, apenas indicação visual
+- Condições requerem atenção mas não são críticas
 
-**LED Vermelho + Buzzer Intermitente (Estado Crítico):**
-- Temperatura: < 16°C ou > 28°C
-- Umidade: < 30% ou > 80%
+**LED Vermelho + Buzzer Intermitente (Estado Crítico - ALERT_CRITICAL):**
+- Temperatura ou umidade fora dos limites por 10 minutos (60 leituras consecutivas)
+- Luminosidade fora dos limites por 5 minutos (30 leituras consecutivas)
 - Violação de limites críticos, ação imediata requerida
-- Buzzer toca em padrão intermitente (200ms on/off)
+- **Padrão do Buzzer**: 500ms ON → 30s OFF (ciclo contínuo)
+- **Snooze**: Pressionar botão durante alerta crítico silencia buzzer por 5 minutos
+- Alerta persiste até condições voltarem ao normal
 
 #### Extração de Dados
 
 **Pressione o botão por mais de 2 segundos:**
 
-1. Sistema para o monitoramento
-2. LED indicador pisca (confirmação de comando)
-3. Dados são enviados via UART em formato JSON:
+1. Sistema continua monitoramento (não para)
+2. Botão detectado: log "Long Press detectado"
+3. Dados são enviados via UART em formato JSON (array):
    ```json
-   {"timestamp":1234567890,"temp":24,"hum":55,"lux":450.5,"noise":120}
-   {"timestamp":1234567950,"temp":24,"hum":56,"lux":448.0,"noise":118}
+   [
+   {"timestamp":1733990400,"temp":24.00,"humi":55.00,"light":245.50,"noise":120},
+   {"timestamp":1733990460,"temp":24.00,"humi":56.00,"light":243.00,"noise":118},
    ...
+   ]
    ```
-4. Após dump completo:
-   - Flash é limpo (NVS erased)
+4. Após dump completo (pode levar vários segundos para 1440 registros):
+   - Flash buffer é limpo (NVS erased)
+   - Log: "Dump concluído, reiniciando dispositivo em 500ms..."
    - Sistema reinicia automaticamente
+   - Histórico RAM e flash são resetados
    - Monitoramento recomeça do zero
+
+**Observações:**
+- Cada registro é enviado em chunk de 10 amostras por vez
+- Campos JSON: `timestamp` (Unix time), `temp` (°C), `humi` (%), `light` (lux), `noise` (ADC raw)
+- Precisão: 2 casas decimais para valores float
 
 **Captura via Serial:**
 ```bash
@@ -534,12 +584,15 @@ buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 10080);
 - Testar buzzer com multímetro (deve mostrar ~3.3V quando ativo)
 
 #### Botão Não Detecta Pressão Longa
-**Sintoma**: Botão só funciona nos primeiros 5 segundos
+**Sintoma**: Botão não responde ou não detecta pressões longas
 
 **Solução**:
-- Após inicialização, botão ainda deve funcionar
-- Verificar conexão GPIO 22 a GND via botão
-- [LACUNA: comportamento esperado do botão após janela de teste inicial]
+- Verificar conexão GPIO 22 a GND via botão (pull-up interno habilitado)
+- Durante alerta crítico, botão ativa snooze em vez de dump (comportamento esperado)
+- Verificar logs: deve aparecer "Botao pressionado" e "Long Press detectado (Xms)"
+- Pressão deve ser mantida por mais de 2000ms para ser considerada longa
+- Debouncing: aguarda 50ms para estabilizar leitura
+- Após janela de teste inicial (5s), botão funciona normalmente mas não causa reboot
 
 ### Debug via Serial
 
@@ -628,15 +681,26 @@ Para contribuir com o projeto:
 
 ## Limitações Conhecidas
 
-1. **Capacidade de Armazenamento**: NVS padrão ~24KB, limita histórico a ~2500 registros
+1. **Capacidade de Armazenamento**: NVS padrão ~24KB, limita histórico a 1440 registros (24h com 1 amostra/min)
+   - Cada `flash_record_t`: 9 bytes (4 bytes timestamp + 5 bytes compactados)
+   - Buffer total: 1440 × 9 = 12.96 KB
 2. **Precisão Temporal sem WiFi**: Timestamps relativos ao boot, não há RTC externo
+   - Modo noturno não funciona sem sincronização NTP
 3. **Sensores DHT11**: Resolução de 1°C e 1% (considerar DHT22 para maior precisão)
-4. **Ruído ADC**: KY-037 sensível a ruído elétrico, filtro digital recomendado
-5. **[LACUNA: Outras limitações do projeto]**
+   - Mínimo 2s entre leituras (limitação do sensor)
+4. **Ruído ADC**: KY-037 sensível a ruído elétrico e interferência WiFi
+   - Sistema desliga WiFi após NTP para minimizar interferência
+5. **Compactação de Dados**: Perda de precisão ao compactar
+   - Temperatura: 6 bits (0-50°C, step 1.0)
+   - Umidade: 7 bits (0-100%, step 1.0)
+   - Luz: 15 bits (0-16384 lux, step 0.5)
+   - Ruído: 12 bits (0-4096, step 2.0)
+6. **Alertas Persistentes**: Não há auto-clear de alertas críticos
+   - Sistema requer que condições voltem ao normal manualmente
+7. **Histórico RAM**: Buffer de 60 amostras pode ser perdido em caso de crash antes de salvar na flash
 
 ## Trabalhos Futuros
 
-- [ ] Implementar servidor HTTP para visualização em tempo real
 - [ ] Adicionar suporte a MQTT para integração IoT
 - [ ] Implementar log de eventos críticos separado
 - [ ] Adicionar suporte a múltiplos pontos de monitoramento (rede de sensores)
@@ -653,7 +717,6 @@ Este projeto está licenciado sob a **MIT License**. Consulte o arquivo `LICENSE
 - [BH1750FVI - Sensor de Luminosidade](docs/BH1750FVI%20-%20Sensor%20ICs.pdf)
 - [DHT11 - Sensor de Temperatura e Umidade](docs/DHT11_Datasheet.pdf)
 - [KY-037 - Sensor de Som](docs/KY-037-datasheet.pdf)
-- [CZN-15E - Buzzer Piezoelétrico](docs/CZN-15E.pdf)
 
 ### Documentação Técnica
 - [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/)
