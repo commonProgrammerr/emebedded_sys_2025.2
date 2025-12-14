@@ -299,12 +299,21 @@ pio device monitor
 - Transição para STATE_NORMAL (LED desligado)
 
 #### Durante Operação
-- **Dados visíveis via UART** (115200 baud):
-  ```
-  [SensorMonitor] DHT11: T=24.5°C, RH=52.0%
-  [SensorMonitor] BH1750: 280 lux
-  [SensorMonitor] KY-037: 42 (score)
-  [StateM] Todos os parâmetros OK
+- **Logs visíveis do sistema via UART** (115200 baud):
+  ```log
+   (642317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
+   W (642317) ALERT: [WARNING] Leitura de temperatura/umidade fora dos limites seguros!
+   I (642317) KY037: Sound level: 1 (raw ADC value)
+   I (643307) KY037: Sound level: 1 (raw ADC value)
+   I (644317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
+   W (644317) ALERT: [WARNING] Leitura de temperatura/umidade fora dos limites seguros!
+   I (644317) KY037: Sound level: 5 (raw ADC value)
+   I (645307) KY037: Sound level: 2 (raw ADC value)
+   I (646317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
+   W (646317) ALERT: [CRITICAL] Leitura de temperatura/umidade fora dos limites seguros!
+   I (646317) KY037: Sound level: 6 (raw ADC value)
+   I (647307) KY037: Sound level: 2 (raw ADC value)
+   I (648317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
   ```
 
 - **Alertas Visuais/Sonoros**:
@@ -313,14 +322,13 @@ pio device monitor
 
 - **Interação com Botão**:
   - **Primeiros 5 segundos (durante boot)**: Pressione por ≥ 2s para exportar dados em JSON e reiniciar
-  - **Durante operação normal**: Pressione para ativar snooze (buzzer silencia por 5 minutos se em ALERT_CRITICAL)
+  - **Durante operação normal**: Pressione para ativar snooze (buzzer silencia por 10 minutos se em ALERT_CRITICAL)
 
 #### Exportação de Dados via Botão
 
 **Durante os primeiros 5 segundos após boot**, pressione o botão:
 
 - **Pressionamento longo (≥ 2 segundos)**: Exporta TODOS os registros armazenados em flash via UART (formato JSON) e reinicia o dispositivo
-- **Pressionamento curto (< 2 segundos)**: Durante operação normal, ativa **snooze de 5 minutos** (buzzer silencia se em estado ALERT_CRITICAL)
 
 **Exemplo de saída JSON** (via Serial Monitor a 115200 baud):
 ```
@@ -427,10 +435,6 @@ idf.py erase-otadata
 ### Protocolos de Comunicação
 - [I2C Specification](https://www.nxp.com/docs/en/user-manual/UM10204.pdf)
 - [1-Wire Protocol (DHT)](https://www.maximintegrated.com/en/design/technical-documents/tutorials/706.html)
-
-### Padrões de Biotério
-- [FELASA (Federation European Laboratory Animal Science Association)](https://www.felasa.eu/) – Recomendações de bem-estar animal
-- [Guide for the Care and Use of Laboratory Animals (NIH)](https://grants.nih.gov/grants/olaw/guide-for-the-care-and-use-of-laboratory-animals.pdf)
 
 ---
 
