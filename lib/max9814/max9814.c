@@ -5,16 +5,11 @@
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "soc/soc_caps.h"
 
 static const char *TAG = "MAX9814";
 
 // ADC maximum value (12-bit ADC on ESP32)
 #define ADC_MAX_VALUE 4095
-
-// DMA buffer configuration
-#define DMA_BUF_SIZE 1024
-#define DMA_BUF_COUNT 2
 
 /**
  * @brief Initialize the MAX9814 sensor
@@ -38,8 +33,6 @@ esp_err_t max9814_init(max9814_t *max9814, const max9814_config_t *config)
     max9814->channel = config->channel;
     max9814->attenuation = config->attenuation;
     max9814->buffer_size = config->buffer_size;
-    max9814->sample_rate = (config->sample_rate > 0) ? config->sample_rate : MAX9814_SAMPLE_RATE_HZ;
-    max9814->collecting = false;
 
     // Allocate sample buffer
     max9814->sample_buffer = (uint32_t *)malloc(config->buffer_size * sizeof(uint32_t));
@@ -49,75 +42,51 @@ esp_err_t max9814_init(max9814_t *max9814, const max9814_config_t *config)
         return ESP_ERR_NO_MEM;
     }
 
-    // Allocate DMA buffer
-    max9814->dma_buffer = (uint8_t *)malloc(DMA_BUF_SIZE);
-    if (max9814->dma_buffer == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to allocate DMA buffer");
-        free(max9814->sample_buffer);
-        return ESP_ERR_NO_MEM;
-    }
-
-    // Initialize buffers with zeros
+    // Initialize buffer with zeros
     memset(max9814->sample_buffer, 0, config->buffer_size * sizeof(uint32_t));
-    memset(max9814->dma_buffer, 0, DMA_BUF_SIZE);
 
     // Create mutex for thread safety
     max9814->mutex = xSemaphoreCreateMutex();
     if (max9814->mutex == NULL)
     {
         ESP_LOGE(TAG, "Failed to create mutex");
-        free(max9814->dma_buffer);
         free(max9814->sample_buffer);
         return ESP_ERR_NO_MEM;
     }
 
-    // Configure ADC continuous mode with DMA
-    adc_continuous_handle_cfg_t adc_config = {
-        .max_store_buf_size = DMA_BUF_SIZE * DMA_BUF_COUNT,
-        .conv_frame_size = DMA_BUF_SIZE,
+    // Configure ADC oneshot mode
+    adc_oneshot_unit_init_cfg_t init_config = {
+        .unit_id = ADC_UNIT_1,
     };
 
-    esp_err_t ret = adc_continuous_new_handle(&adc_config, &max9814->adc_handle);
+    esp_err_t ret = adc_oneshot_new_unit(&init_config, &max9814->adc_handle);
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to create ADC continuous handle: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize ADC unit: %s", esp_err_to_name(ret));
         vSemaphoreDelete(max9814->mutex);
-        free(max9814->dma_buffer);
         free(max9814->sample_buffer);
         return ret;
     }
 
-    // Configure ADC channel and pattern
-    adc_digi_pattern_config_t adc_pattern = {
+    // Configure ADC channel
+    adc_oneshot_chan_cfg_t chan_config = {
         .atten = config->attenuation,
-        .channel = config->channel,
-        .unit = ADC_UNIT_1,
-        .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
+        .bitwidth = ADC_BITWIDTH_12,
     };
 
-    adc_continuous_config_t dig_cfg = {
-        .pattern_num = 1,
-        .adc_pattern = &adc_pattern,
-        .sample_freq_hz = max9814->sample_rate,
-        .conv_mode = ADC_CONV_SINGLE_UNIT_1,
-        .format = ADC_DIGI_OUTPUT_FORMAT_TYPE1,
-    };
-
-    ret = adc_continuous_config(max9814->adc_handle, &dig_cfg);
+    ret = adc_oneshot_config_channel(max9814->adc_handle, config->channel, &chan_config);
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to configure ADC: %s", esp_err_to_name(ret));
-        adc_continuous_deinit(max9814->adc_handle);
+        ESP_LOGE(TAG, "Failed to configure ADC channel: %s", esp_err_to_name(ret));
+        adc_oneshot_del_unit(max9814->adc_handle);
         vSemaphoreDelete(max9814->mutex);
-        free(max9814->dma_buffer);
         free(max9814->sample_buffer);
         return ret;
     }
 
     max9814->initialized = true;
-    ESP_LOGI(TAG, "MAX9814 initialized with DMA (channel: %d, buffer: %lu samples, rate: %lu Hz)",
-             config->channel, config->buffer_size, max9814->sample_rate);
+    ESP_LOGI(TAG, "MAX9814 initialized (channel: %d, buffer: %lu samples)",
+             config->channel, config->buffer_size);
 
     return ESP_OK;
 }
@@ -137,36 +106,23 @@ esp_err_t max9814_deinit(max9814_t *max9814)
         return ESP_OK;
     }
 
-    // Stop sampling if active
-    if (max9814->collecting)
-    {
-        adc_continuous_stop(max9814->adc_handle);
-    }
-
     // Take mutex before cleanup
     if (xSemaphoreTake(max9814->mutex, portMAX_DELAY) == pdTRUE)
     {
-        // Deinitialize ADC
+        // Delete ADC unit
         if (max9814->adc_handle != NULL)
         {
-            adc_continuous_deinit(max9814->adc_handle);
+            adc_oneshot_del_unit(max9814->adc_handle);
         }
 
-        // Free buffers
+        // Free buffer
         if (max9814->sample_buffer != NULL)
         {
             free(max9814->sample_buffer);
             max9814->sample_buffer = NULL;
         }
 
-        if (max9814->dma_buffer != NULL)
-        {
-            free(max9814->dma_buffer);
-            max9814->dma_buffer = NULL;
-        }
-
         max9814->initialized = false;
-        max9814->collecting = false;
         xSemaphoreGive(max9814->mutex);
     }
 
@@ -179,9 +135,9 @@ esp_err_t max9814_deinit(max9814_t *max9814)
 }
 
 /**
- * @brief Start continuous ADC sampling
+ * @brief Collect samples from ADC
  */
-esp_err_t max9814_start_sampling(max9814_t *max9814)
+esp_err_t max9814_collect_samples(max9814_t *max9814, uint32_t delay_us)
 {
     if (max9814 == NULL || !max9814->initialized)
     {
@@ -190,146 +146,46 @@ esp_err_t max9814_start_sampling(max9814_t *max9814)
     }
 
     // Take mutex for thread safety
-    if (xSemaphoreTake(max9814->mutex, portMAX_DELAY) != pdTRUE)
-    {
-        ESP_LOGE(TAG, "Failed to take mutex");
-        return ESP_ERR_TIMEOUT;
-    }
-
-    if (max9814->collecting)
-    {
-        ESP_LOGW(TAG, "Already collecting samples");
-        xSemaphoreGive(max9814->mutex);
-        return ESP_OK;
-    }
-
-    esp_err_t ret = adc_continuous_start(max9814->adc_handle);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to start ADC: %s", esp_err_to_name(ret));
-        xSemaphoreGive(max9814->mutex);
-        return ret;
-    }
-
-    max9814->collecting = true;
-    xSemaphoreGive(max9814->mutex);
-
-    ESP_LOGI(TAG, "Started continuous sampling at %lu Hz", max9814->sample_rate);
-    return ESP_OK;
-}
-
-/**
- * @brief Stop continuous ADC sampling
- */
-esp_err_t max9814_stop_sampling(max9814_t *max9814)
-{
-    if (max9814 == NULL || !max9814->initialized)
-    {
-        ESP_LOGE(TAG, "MAX9814 not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // Take mutex for thread safety
-    if (xSemaphoreTake(max9814->mutex, portMAX_DELAY) != pdTRUE)
-    {
-        ESP_LOGE(TAG, "Failed to take mutex");
-        return ESP_ERR_TIMEOUT;
-    }
-
-    if (!max9814->collecting)
-    {
-        xSemaphoreGive(max9814->mutex);
-        return ESP_OK;
-    }
-
-    esp_err_t ret = adc_continuous_stop(max9814->adc_handle);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to stop ADC: %s", esp_err_to_name(ret));
-        xSemaphoreGive(max9814->mutex);
-        return ret;
-    }
-
-    max9814->collecting = false;
-    xSemaphoreGive(max9814->mutex);
-
-    ESP_LOGI(TAG, "Stopped continuous sampling");
-    return ESP_OK;
-}
-
-/**
- * @brief Collect samples from ADC using DMA
- */
-esp_err_t max9814_collect_samples(max9814_t *max9814)
-{
-    if (max9814 == NULL || !max9814->initialized)
-    {
-        ESP_LOGE(TAG, "MAX9814 not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // Take mutex for thread safety
-    if (xSemaphoreTake(max9814->mutex, portMAX_DELAY) != pdTRUE)
+    if (xSemaphoreTake(max9814->mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
     {
         ESP_LOGE(TAG, "Failed to take mutex");
         return ESP_ERR_TIMEOUT;
     }
 
     esp_err_t ret = ESP_OK;
-    uint32_t sample_count = 0;
-    bool was_collecting = max9814->collecting;
+    int adc_reading;
 
-    // Start ADC if not already running
-    if (!max9814->collecting)
+    // Collect samples
+    for (uint32_t i = 0; i < max9814->buffer_size; i++)
     {
-        ret = adc_continuous_start(max9814->adc_handle);
+        ret = adc_oneshot_read(max9814->adc_handle, max9814->channel, &adc_reading);
         if (ret != ESP_OK)
         {
-            ESP_LOGE(TAG, "Failed to start ADC: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "ADC read failed at sample %lu: %s", i, esp_err_to_name(ret));
             xSemaphoreGive(max9814->mutex);
             return ret;
         }
-        max9814->collecting = true;
-    }
 
-    // Read samples until buffer is full
-    while (sample_count < max9814->buffer_size)
-    {
-        uint32_t bytes_read = 0;
-        ret = adc_continuous_read(max9814->adc_handle, max9814->dma_buffer, 
-                                  DMA_BUF_SIZE, &bytes_read, portMAX_DELAY);
+        max9814->sample_buffer[i] = (uint32_t)adc_reading;
+
+        // Delay between samples if specified
+        if (delay_us > 0)
+        {
+            esp_rom_delay_us(delay_us);
+        }
         
-        if (ret != ESP_OK)
+        // Yield periodically to prevent watchdog
+        if (i % 128 == 0 && i > 0)
         {
-            ESP_LOGE(TAG, "ADC read failed: %s", esp_err_to_name(ret));
-            break;
-        }
-
-        // Process DMA buffer - extract ADC values
-        for (uint32_t i = 0; i < bytes_read && sample_count < max9814->buffer_size; i += SOC_ADC_DIGI_RESULT_BYTES)
-        {
-            adc_digi_output_data_t *p = (adc_digi_output_data_t *)&max9814->dma_buffer[i];
-            
-            // Extract 12-bit ADC value from DMA format
-            uint32_t adc_value = p->type1.data;
-            
-            max9814->sample_buffer[sample_count++] = adc_value;
+            taskYIELD();
         }
     }
 
-    max9814->sample_index = sample_count;
-
-    // Stop ADC if we started it
-    if (!was_collecting && max9814->collecting)
-    {
-        adc_continuous_stop(max9814->adc_handle);
-        max9814->collecting = false;
-    }
-
+    max9814->sample_index = max9814->buffer_size;
     xSemaphoreGive(max9814->mutex);
 
-    ESP_LOGD(TAG, "Collected %lu samples via DMA", sample_count);
-    return ret;
+    ESP_LOGD(TAG, "Collected %lu samples", max9814->buffer_size);
+    return ESP_OK;
 }
 
 /**

@@ -244,7 +244,3 @@ The mutex ensures data consistency and prevents race conditions.
 - For best results, use `ADC_ATTEN_DB_11` to capture the full voltage range
 - Higher sample rates require shorter delays but may impact system performance
 - The RMS calculation removes DC bias automatically by subtracting the mean
-
-## License
-
-This library is provided as-is for use with ESP-IDF projects.
