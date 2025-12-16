@@ -33,10 +33,11 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
 - Zona Crítica: Violação por 5 minutos (30 leituras)
 
 **Limites de Ruído:**
-- Nível Médio Máximo: 2100 (ADC raw)
-- Pico Instantâneo: 3048 (ADC raw)
-- Zona de Alerta (Warning): Violação por 40 segundos
-- Picos são contabilizados como múltiplas violações
+- Medição via RMS (Root Mean Square) de 1024 amostras coletadas a 8kHz
+- Nível expresso em percentual (0-100%) da amplitude máxima do ADC
+- Zona de Alerta (Warning): RMS > 15% por 40 segundos
+- Zona Crítica: RMS > 25% ou picos persistentes
+- Thread-safe com mutex para evitar conflitos com FreeRTOS
 
 
 
@@ -45,7 +46,7 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
 ### Sensores e Monitoramento
 - **DHT11**: Sensor de temperatura e umidade digital (leitura a cada 2s)
 - **BH1750FVI**: Sensor de luminosidade I2C de alta precisão (leitura a cada 10s)
-- **KY-037**: Sensor de som/microfone analógico (leitura a cada 1s)
+- **MAX9814**: Amplificador de microfone com AGC (Automatic Gain Control), leitura via ADC oneshot com cálculo de RMS (leitura a cada 1s)
 - **Sistema de Monitores**: Cada sensor possui task dedicada com timer periódico em FreeRTOS
 
 ### Sistema de Alertas
@@ -151,7 +152,7 @@ typedef struct {
     float temperature;   // °C
     float humidity;      // %
     float lux;          // lx
-    uint16_t noise_level;  // ADC raw (0-4095)
+    float noise_level;   // RMS percentage (0.0-100.0%)
 } full_sensor_read_t;
 ```
 
@@ -161,7 +162,7 @@ typedef struct {
     uint8_t temperature : 6;   // 0-50°C, step 1.0
     uint8_t humidity : 7;      // 0-100%, step 1.0
     uint16_t lux : 15;         // 0-16384 lux, step 0.5
-    uint16_t noise_level : 12; // 0-4096, step 2.0
+    uint16_t noise_level : 12; // 0-100% RMS, step 0.025
 } compact_sensor_read_t;
 ```
 
@@ -190,8 +191,9 @@ typedef struct {
   - **ESP32 WROOM**: SDA=GPIO 21, SCL=GPIO 19
   - **ESP32-S2**: SDA=GPIO 21, SCL=GPIO 20
   - Endereço I2C: `0x23` (BH1750_I2C_ADDR_LOW)
-- **GPIO 33**: KY-037 Analog Out (ADC1_CH5 - nível de ruído)
-- **KY-037 Digital Out**: Não utilizado nesta implementação
+- **GPIO 33**: MAX9814 Analog Out (ADC1_CH5 - nível de ruído RMS)
+  - Taxa de amostragem: 8kHz (1024 amostras por leitura)
+  - Modo ADC: Oneshot com atenuação 11dB (0-3.3V range)
 
 #### Indicadores e Controle
 - **GPIO 32**: LED Amarelo (Estado Warning)
@@ -228,7 +230,7 @@ typedef struct {
 │   ├── flash_record.h       # Estrutura de registro na flash
 │   ├── dht11_sensor.h       # Driver DHT11
 │   ├── bh1750fvi_sensor.h   # Driver BH1750FVI
-│   ├── KY-037_sensor.h      # Driver KY-037
+│   ├── noise_sensor.h       # Wrapper para MAX9814 library
 │   ├── alerts.h             # Sistema de alertas (LEDs + buzzer)
 │   ├── button_driver.h      # Driver de botão com debouncing
 │   ├── time_sync.h          # Sincronização NTP via WiFi
@@ -239,7 +241,7 @@ typedef struct {
 │   ├── sensor_history.c
 │   ├── dht11_sensor.c
 │   ├── bh1750fvi_sensor.c
-│   ├── KY-037_sensor.c
+│   ├── noise_sensor.c       # Wrapper para MAX9814
 │   ├── alerts.c
 │   ├── button_driver.c
 │   ├── time_sync.c
@@ -250,6 +252,10 @@ typedef struct {
 │   ├── flash_buffer/        # Sistema de buffer circular em NVS
 │   │   ├── flash_buffer.h
 │   │   ├── flash_buffer.c
+│   │   └── README.md
+│   ├── max9814/             # Driver MAX9814 com ADC oneshot e cálculo RMS
+│   │   ├── max9814.h
+│   │   ├── max9814.c
 │   │   └── README.md
 │   └── bh1750/              # Driver I2C BH1750 (legacy)
 │
@@ -306,12 +312,19 @@ BH1750 SDA  → ESP32 GPIO 19 (I2C Data)
 BH1750 ADDR → GND (endereço I2C 0x23) ou VCC (0x5C)
 ```
 
-**KY-037 (Sensor de Som):**
+**MAX9814 (Amplificador de Microfone com AGC):**
 ```
-KY-037 VCC → ESP32 5V ou 3.3V
-KY-037 GND → ESP32 GND
-KY-037 AO  → ESP32 GPIO 33 (ADC1_CH5)
+MAX9814 VCC → ESP32 3.3V (ou 5V se módulo suportar)
+MAX9814 GND → ESP32 GND
+MAX9814 OUT → ESP32 GPIO 33 (ADC1_CH5)
+MAX9814 GAIN → Configurar jumpers para ganho desejado (40/50/60dB)
+MAX9814 AR → Deixar aberto (attack/release padrão)
 ```
+
+**Nota sobre Ganho**: 
+- 40dB: Ambientes mais ruidosos (conversas normais)
+- 50dB: Uso geral (padrão recomendado)
+- 60dB: Ambientes muito silenciosos (pode saturar facilmente)
 
 #### Indicadores Visuais e Sonoros
 
@@ -515,8 +528,33 @@ Editar em `src/main.c`:
 ```c
 #define DHT11_READ_INTERVAL_MS 2000   // Temperatura/umidade
 #define BH1750_READ_INTERVAL_MS 10000 // Luminosidade
-#define NOISE_READ_INTERVAL_MS 1000   // Ruído
+#define NOISE_READ_INTERVAL_MS 1000   // Ruído (RMS)
 ```
+
+### Configuração do MAX9814
+
+A biblioteca MAX9814 permite ajustar parâmetros de amostragem. Editar em [src/noise_sensor.c](../src/noise_sensor.c):
+
+```c
+// Configuração atual
+#define NUM_SAMPLES 1024              // Número de amostras por leitura
+#define SAMPLE_DELAY_US 125           // 125us = 8kHz sample rate
+#define ADC_ATTEN ADC_ATTEN_DB_11     // 0-3.3V range
+
+// Para maior precisão (mais lento):
+#define NUM_SAMPLES 2048
+#define SAMPLE_DELAY_US 100           // 10kHz
+
+// Para resposta mais rápida (menor precisão):
+#define NUM_SAMPLES 512
+#define SAMPLE_DELAY_US 125
+```
+
+**Cálculo de RMS:**
+- RMS = raiz quadrada da média dos quadrados das amostras
+- DC bias é removido calculando média e subtraindo de cada amostra
+- Resultado em percentual: (RMS / ADC_MAX) × 100
+- Thread-safe com mutex timeout de 1000ms
 
 ### Tamanho do Buffer Flash
 
@@ -535,6 +573,34 @@ buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 10080);
 ### Partição NVS Customizada
 
 [LACUNA: Procedimento para criar custom partition table no ESP-IDF com maior espaço para NVS]
+
+## Correções Recentes (Dezembro 2025)
+
+### Timer Service Stack Overflow (RESOLVIDO)
+**Problema**: Sistema apresentava erro `***ERROR*** A stack overflow in task Tmr Svc`
+
+**Causa**: Stack de 2048 bytes insuficiente para callback chain dos sensores
+
+**Solução**: Aumentado `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH` de 2048 para 4096 bytes em [sdkconfig.upesy_wroom](../sdkconfig.upesy_wroom) (linhas 1304, 2174)
+
+### Noise Sensor Data Assignment Bug (RESOLVIDO)
+**Problema**: Valores de RMS calculados mas não reportados ao sistema de monitoramento
+
+**Causa**: Função `noise_sensor_read_data()` calculava RMS mas não escrevia resultado no parâmetro de saída
+
+**Solução**: Adicionada linha `*(float *)data = rms_percent;` em [src/noise_sensor.c](../src/noise_sensor.c) linha 70
+
+**Impacto**: Bug causava comportamento indefinido na callback chain e corrupção potencial de stack
+
+### DMA Implementation Abandoned
+**Tentativa**: Implementação com ADC continuous mode + DMA para melhor performance
+
+**Resultado**: Watchdog timer resets (rst:0x8 TG1WDT_SYS_RESET) devido a bloqueios no hardware ADC
+
+**Decisão**: Mantida implementação oneshot com delays calculados (125us) e taskYIELD() periódico
+- Oneshot: Simples, confiável, suficiente para 8kHz
+- taskYIELD() a cada 128 amostras previne starvation de outras tasks
+- Mutex timeout de 1000ms protege contra deadlocks
 
 ## Troubleshooting
 
@@ -574,13 +640,24 @@ buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 10080);
 - Ajustar período de salvamento (atual: 1 amostra/minuto)
 - Fazer dump periódico de dados antes de encher
 
+#### MAX9814 Retorna Valores Sempre Baixos
+**Sintoma**: RMS sempre próximo de 0% mesmo com ruído audível
+
+**Explicação**: RMS mede variação AC, não nível DC. Sinal constante ou sem variação resulta em RMS baixo.
+
+**Solução**:
+- Verificar se MAX9814 está recebendo áudio (usar osciloscópio no pino OUT)
+- Ajustar ganho do MAX9814 (jumpers GAIN no módulo: 40dB, 50dB, 60dB)
+- Verificar se ambiente tem variação sonora real (não apenas nível DC)
+- Debug: Ativar logs em [lib/max9814/max9814.c](../lib/max9814/max9814.c) para ver mean/min/max/range
+
 #### Buzzer Não Funciona
 **Sintoma**: LED vermelho acende mas sem som
 
 **Solução**:
-- Verificar polaridade do buzzer (+ no GPIO 18)
+- Verificar polaridade do buzzer (+ no GPIO 34)
 - Buzzer ativo: deve funcionar direto
-- Buzzer passivo: requer PWM (implementado, frequência 4 kHz)
+- Buzzer passivo: requer PWM (implementado, frequência 2 kHz)
 - Testar buzzer com multímetro (deve mostrar ~3.3V quando ativo)
 
 #### Botão Não Detecta Pressão Longa
@@ -688,8 +765,10 @@ Para contribuir com o projeto:
    - Modo noturno não funciona sem sincronização NTP
 3. **Sensores DHT11**: Resolução de 1°C e 1% (considerar DHT22 para maior precisão)
    - Mínimo 2s entre leituras (limitação do sensor)
-4. **Ruído ADC**: KY-037 sensível a ruído elétrico e interferência WiFi
+#### Ruído ADC: MAX9814 sensível a ruído elétrico e interferência WiFi
    - Sistema desliga WiFi após NTP para minimizar interferência
+   - Implementação oneshot (não DMA) para maior estabilidade
+   - taskYIELD() a cada 128 amostras previne watchdog timer resets
 5. **Compactação de Dados**: Perda de precisão ao compactar
    - Temperatura: 6 bits (0-50°C, step 1.0)
    - Umidade: 7 bits (0-100%, step 1.0)
