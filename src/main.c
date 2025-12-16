@@ -5,7 +5,7 @@
 #include "esp_system.h"
 #include "bh1750fvi_sensor.h"
 #include "dht11_sensor.h"
-#include "KY-037_sensor.h"
+#include "noise_sensor.h"
 #include "sensor_monitor.h"
 #include "sensor_history.h"
 #include "flash_buffer.h"
@@ -39,7 +39,7 @@ uint8_t night_mode = 0;
 
 // Callbacks de salvamento de dados dos sensores
 void save_dht11(sensor_base_t *sensor, void *data);
-void save_ky037(sensor_base_t *sensor, void *data);
+void save_noise(sensor_base_t *sensor, void *data);
 void save_bh1750(sensor_base_t *sensor, void *data);
 
 esp_err_t check_safe_clean_alerts();
@@ -96,11 +96,11 @@ void app_main(void)
     // Sincroniza hora com NTP via WiFi
     sync_time_with_ntp("90225", "Segred0%%@2444", NULL, NULL);
 
-    sensor_base_t bh1750 = {0}, dht11 = {0}, ky_037 = {0};
+    sensor_base_t bh1750 = {0}, dht11 = {0}, max9814 = {0};
 
     SensorStatus_t bh1750_status = bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
     SensorStatus_t dht11_status = dht11_init(&dht11, DHT11_PIN);
-    SensorStatus_t ky037_status = KY037_init(&ky_037, MIC_ADC_CHANEL);
+    SensorStatus_t noise_sensor_status = KY037_init(&max9814, MIC_ADC_CHANEL);
 
     sensor_monitor_t *th_monitor = NULL;
     sensor_monitor_t *noise_monitor = NULL;
@@ -117,10 +117,10 @@ void app_main(void)
         ESP_LOGW("main", "DHT11 initialization failed, skipping monitor creation");
     }
 
-    if (ky037_status == SENSOR_OK)
+    if (noise_sensor_status == SENSOR_OK)
     {
         noise_monitor = new_sensor_monitor(
-            &ky_037, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_ky037);
+            &max9814, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_noise);
     }
     else
     {
@@ -182,7 +182,7 @@ void save_dht11(sensor_base_t *sensor, void *data)
         alerts_send_alert(ALERT_WARNING, "Leitura de temperatura/umidade fora dos limites seguros!");
 }
 
-void save_ky037(sensor_base_t *sensor, void *data)
+void save_noise(sensor_base_t *sensor, void *data)
 {
     uint16_t *noise_level = (uint16_t *)data;
 
