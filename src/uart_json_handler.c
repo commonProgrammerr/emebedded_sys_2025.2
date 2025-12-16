@@ -24,7 +24,7 @@ esp_err_t uart_json_send_record(const flash_record_t* record, char* term) {
     full_sensor_read_t full_read;
     compact_to_full(&record->compact, &full_read);
 
-    printf("{\"timestamp\":%lu,\"temp\":%.2f,\"humi\":%.2f,\"light\":%.2f,\"noise\":%u}%s",
+    printf("{\"timestamp\":%lu,\"temp\":%.2f,\"humi\":%.2f,\"light\":%.2f,\"noise\":%.2f}%s",
            record->timestamp,
             full_read.temperature,
            full_read.humidity,

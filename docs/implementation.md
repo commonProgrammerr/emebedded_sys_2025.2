@@ -101,7 +101,7 @@ O projeto atende aos seguintes requisitos estabelecidos para monitoramento de bi
                             ▼
             ┌──────────────────────────────┐
             │   Callbacks: save_dht11()    │
-            │   save_ky037(), save_bh1750()│
+            │   save_noise(), save_bh1750()│
             │  - Atualiza current_read     │
             │  - Salva no sensor_history   │
             └──────────────────────────────┘
@@ -515,7 +515,7 @@ Editar em `src/main.c`:
 ```c
 #define DHT11_READ_INTERVAL_MS 2000   // Temperatura/umidade
 #define BH1750_READ_INTERVAL_MS 10000 // Luminosidade
-#define KY037_READ_INTERVAL_MS 1000   // Ruído
+#define NOISE_READ_INTERVAL_MS 1000   // Ruído
 ```
 
 ### Tamanho do Buffer Flash

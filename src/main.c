@@ -100,7 +100,7 @@ void app_main(void)
 
     SensorStatus_t bh1750_status = bh1750fvi_init(&bh1750, SDA_IO, SCL_IO, BH1750_I2C_ADDR_LOW, BH1750_CONT_H_RES);
     SensorStatus_t dht11_status = dht11_init(&dht11, DHT11_PIN);
-    SensorStatus_t noise_sensor_status = KY037_init(&max9814, MIC_ADC_CHANEL);
+    SensorStatus_t noise_sensor_status = noise_sensor_init(&max9814, MIC_ADC_CHANEL);
 
     sensor_monitor_t *th_monitor = NULL;
     sensor_monitor_t *noise_monitor = NULL;
@@ -120,11 +120,11 @@ void app_main(void)
     if (noise_sensor_status == SENSOR_OK)
     {
         noise_monitor = new_sensor_monitor(
-            &max9814, KY037_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_noise);
+            &max9814, NOISE_READ_INTERVAL_MS, sizeof(float), "noise_monitor", save_noise);
     }
     else
     {
-        ESP_LOGW("main", "KY037 initialization failed, skipping monitor creation");
+        ESP_LOGW("main", "NOISE initialization failed, skipping monitor creation");
     }
 
     if (bh1750_status == SENSOR_OK)
@@ -184,7 +184,7 @@ void save_dht11(sensor_base_t *sensor, void *data)
 
 void save_noise(sensor_base_t *sensor, void *data)
 {
-    uint16_t *noise_level = (uint16_t *)data;
+    float *noise_level = (float *)data;
 
     current_read.noise_level = *noise_level;
     save_sensor_read(&current_read);
@@ -228,7 +228,7 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer)
 
     if (get_moving_average(&compact_read))
     {
-        ESP_LOGI("AV_CAL", "Media movel - Temp: %.2f C, Hum: %.2f %%, Lux: %.2f lx, Noise: %04u",
+        ESP_LOGI("AV_CAL", "Media movel - Temp: %.2f C, Hum: %.2f %%, Lux: %.2f lx, Noise: %.2f %%",
                  RAW_TO_TEMP(compact_read.temperature),
                  RAW_TO_HUMID(compact_read.humidity),
                  RAW_TO_LUX(compact_read.lux),

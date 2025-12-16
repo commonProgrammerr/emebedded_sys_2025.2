@@ -272,7 +272,7 @@ Ajuste os seguintes defines conforme necessário:
 /* Intervalos de Amostragem (ms) */
 #define DHT11_READ_INTERVAL_MS 2000
 #define BH1750_READ_INTERVAL_MS 10000
-#define KY037_READ_INTERVAL_MS 1000
+#define NOISE_READ_INTERVAL_MS 1000
 ```
 
 ### 3. Gravação e Conexão
@@ -303,16 +303,16 @@ pio device monitor
   ```log
    (642317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
    W (642317) ALERT: [WARNING] Leitura de temperatura/umidade fora dos limites seguros!
-   I (642317) KY037: Sound level: 1 (raw ADC value)
-   I (643307) KY037: Sound level: 1 (raw ADC value)
+   I (642317) NOISE: Sound level: 1 (raw ADC value)
+   I (643307) NOISE: Sound level: 1 (raw ADC value)
    I (644317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
    W (644317) ALERT: [WARNING] Leitura de temperatura/umidade fora dos limites seguros!
-   I (644317) KY037: Sound level: 5 (raw ADC value)
-   I (645307) KY037: Sound level: 2 (raw ADC value)
+   I (644317) NOISE: Sound level: 5 (raw ADC value)
+   I (645307) NOISE: Sound level: 2 (raw ADC value)
    I (646317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
    W (646317) ALERT: [CRITICAL] Leitura de temperatura/umidade fora dos limites seguros!
-   I (646317) KY037: Sound level: 6 (raw ADC value)
-   I (647307) KY037: Sound level: 2 (raw ADC value)
+   I (646317) NOISE: Sound level: 6 (raw ADC value)
+   I (647307) NOISE: Sound level: 2 (raw ADC value)
    I (648317) DHT11: Temperature: 30.00°C, Humidity: 71.00%
   ```
 
@@ -360,7 +360,7 @@ Em `include/env.h`:
 ```c
 #define DHT11_READ_INTERVAL_MS 2000  // 2 s (mín. ~1.5 s para DHT11)
 #define BH1750_READ_INTERVAL_MS 10000 // 10 s
-#define KY037_READ_INTERVAL_MS 1000   // 1 s (mín. para RMS)
+#define NOISE_READ_INTERVAL_MS 1000   // 1 s (mín. para RMS)
 ```
 
 ### Persistência em Flash

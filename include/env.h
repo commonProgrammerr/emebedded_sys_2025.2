@@ -16,7 +16,7 @@
 #define SCL_IO GPIO_NUM_20 
 #define SDA_IO GPIO_NUM_21
 #elif defined(CONFIG_IDF_TARGET_ESP32)
-#define SDA_IO GPIO_NUM_21
+#define SDA_IO GPIO_NUM_18
 #define SCL_IO GPIO_NUM_19
 #endif
 
@@ -36,7 +36,7 @@
 // Polling Intervals 
 #define DHT11_READ_INTERVAL_MS 2000
 #define BH1750_READ_INTERVAL_MS 10000
-#define KY037_READ_INTERVAL_MS 1000
+#define NOISE_READ_INTERVAL_MS 1000
 
 // Button timers
 #define DEBOUNCE_TIME_MS 50
@@ -64,9 +64,9 @@
 #define LUX_NIGHT_MIN 0
 #define LUX_NIGHT_MAX 5 // Tolerance for light leakage
 
-// Noise (raw ADC value, range 0-4096)
-#define NOISE_PEAK_LIMIT 3048
-#define NOISE_AVG_LIMIT  2100
+// Noise (RMS value, range 0-100%)
+#define NOISE_PEAK_LIMIT 40
+#define NOISE_AVG_LIMIT  21
 
 /* --- Alert System Parameters --- */
 

@@ -13,22 +13,22 @@
 #define LUX_TO_RAW(lux) ((uint16_t)(lux) * 2.0f)
 #define RAW_TO_LUX(raw) ((float)(raw) / 2.0f)
 
-#define NOISE_TO_RAW(noise) (((uint16_t)(noise)) >> 1)
-#define RAW_TO_NOISE(raw) (((uint16_t)(raw)) << 1)
+#define NOISE_TO_RAW(noise) ((uint8_t)(noise))
+#define RAW_TO_NOISE(raw) ((float)(raw))
 
-// Compact data structure using bit-fields (5 bytes total)
+// Compact data structure using bit-fields (4 bytes total)
 typedef struct compact_sensor_read {
-    uint8_t temperature : 6;   // 0 to 50,    step 1.0   -> range 50 values (needs 6 bits)
-    uint8_t humidity : 7;      // 0 to 100,   step 1.0   -> range 75 values (needs 7 bits)
-    uint16_t lux : 15;         // 0 to 16384, step 0.5   -> range 32768 values (needs 14 bits)
-    uint16_t noise_level : 12; // 0 to 4096,  step 2.0   -> range 2048 values (needs 12 bits)
-} compact_sensor_read_t;
+    uint8_t temperature : 6;   // 0 to 50,    step 1.0   -> 51 values (needs 6 bits: 2^6=64)
+    uint8_t humidity : 7;      // 0 to 100,   step 1.0   -> 101 values (needs 7 bits: 2^7=128)
+    uint16_t lux : 12;         // 0 to 2047,  step 0.5   -> 4096 values (needs 12 bits: 2^12=4096)
+    uint8_t noise_level : 7;   // 0 to 100,   step 1.0   -> 101 values (needs 7 bits: 2^7=128)
+} __packed compact_sensor_read_t;
 
 typedef struct full_sensor_read {
     float temperature;   // in °C
     float humidity;      // in %
-    float lux;          // in lx
-    uint16_t noise_level;  // raw ADC value
+    float lux;           // in lx
+    float noise_level;   // in RMS %
 } full_sensor_read_t;
 
 
