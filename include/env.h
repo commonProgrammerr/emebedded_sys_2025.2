@@ -48,6 +48,12 @@
 
 #define NIGHT_START_HOUR 18 // 6 PM
 #define NIGHT_END_HOUR 6    // 6 AM
+
+/* --- History Buffer Parameters --- */
+#define HISTORY_BUFFER_SIZE 60 // Number of entries in volatile history buffer
+#define NVS_HISTORY_BUFFER_SIZE 1440 // Number of entries in persistent storage (e.g., 24 hours if each entry is 1 minute)"
+#define HISTORY_SAVE_INTERVAL_MS 60000 // Save history to flash every 60 seconds
+
 /* --- Vivarium Limits (MVP Spec) --- */
 
 // Temperature: 22-26°C
@@ -76,7 +82,10 @@
 #define LIGHT_WINDOW_CRITICAL_TOLERANCE 30 // 5 min (30 * 10s)
 #define NOISE_PEAK_MAX_DURATION 3 // 3 seconds
 #define NOISE_WINDOW_WARNING_TOLERANCE 40 // 40 seconds 
+#define ALERT_RESET_HYSTERESIS 3 // Hysteresis for sensor readings
 
-
+/* --- WIFI Credentials --- */
+#define WIFI_SSID "your_ssid"
+#define WIFI_PASSWORD "your_password"
 
 #endif // PROJECT_ENV_H

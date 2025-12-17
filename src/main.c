@@ -64,7 +64,7 @@ void app_main(void)
     }
 
     // Cria buffer (1440 amostras = 24h com 1 amostra por minuto)
-    buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 1440);
+    buffer = flash_buffer_init("sensors", sizeof(flash_record_t), NVS_HISTORY_BUFFER_SIZE);
     if (!buffer)
     {
         ESP_LOGE("main", "Falha ao criar buffer");
@@ -91,10 +91,10 @@ void app_main(void)
     gpio_set_level(WARNING_STATE_GPIO, 0);
 
     // Inicializa sistema de histórico em RAM
-    init_history_system(60);
+    init_history_system(HISTORY_BUFFER_SIZE);
 
     // Sincroniza hora com NTP via WiFi
-    sync_time_with_ntp("90225", "Segred0%%@2444", NULL, NULL);
+    sync_time_with_ntp(WIFI_SSID, WIFI_PASSWORD, NULL, NULL);
 
     sensor_base_t bh1750 = {0}, dht11 = {0}, max9814 = {0};
 
@@ -149,7 +149,7 @@ void app_main(void)
 
     // Timer para cálculo de média móvel a cada 60s
     TimerHandle_t av_timer = xTimerCreate(
-        "av_calculation_timer", pdMS_TO_TICKS(60000), pdTRUE, NULL, av_cal_monitor_timer_callback);
+        "av_calculation_timer", pdMS_TO_TICKS(HISTORY_SAVE_INTERVAL_MS), pdTRUE, NULL, av_cal_monitor_timer_callback);
 
     if (av_timer != NULL)
         xTimerStart(av_timer, 0);
@@ -162,7 +162,7 @@ void app_main(void)
         else
             hysteresis = 0;
 
-        if (hysteresis >= 3)
+        if (hysteresis >= ALERT_RESET_HYSTERESIS)
             alerts_clear_alert();
         
         vTaskDelay(pdMS_TO_TICKS(1000));
