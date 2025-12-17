@@ -153,10 +153,18 @@ void app_main(void)
 
     if (av_timer != NULL)
         xTimerStart(av_timer, 0);
+
+    uint8_t hysteresis = 0;
     for (;;)
     {
         if (check_safe_clean_alerts() == ESP_OK)
+            hysteresis++;
+        else
+            hysteresis = 0;
+
+        if (hysteresis >= 3)
             alerts_clear_alert();
+        
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -241,18 +249,15 @@ void av_cal_monitor_timer_callback(TimerHandle_t xTimer)
         frec.timestamp = (uint32_t)now;
         frec.compact = compact_read;
         flash_buffer_write(buffer, &frec);
-        if (timeinfo.tm_min == 0)
+        if (!night_mode && (timeinfo.tm_hour >= NIGHT_START_HOUR || timeinfo.tm_hour < NIGHT_END_HOUR))
         {
-            if (!night_mode && (timeinfo.tm_hour >= NIGHT_START_HOUR || timeinfo.tm_hour < NIGHT_END_HOUR))
-            {
-                ESP_LOGI("main", "Iniciando modo noturno");
-                night_mode = 1;
-            }
-            else if (night_mode && (timeinfo.tm_hour < NIGHT_START_HOUR || timeinfo.tm_hour >= NIGHT_END_HOUR))
-            {
-                ESP_LOGI("main", "Encerrando modo noturno");
-                night_mode = 0;
-            }
+            ESP_LOGI("main", "Iniciando modo noturno");
+            night_mode = 1;
+        }
+        else if (night_mode && (timeinfo.tm_hour < NIGHT_START_HOUR || timeinfo.tm_hour >= NIGHT_END_HOUR))
+        {
+            ESP_LOGI("main", "Encerrando modo noturno");
+            night_mode = 0;
         }
     }
 }
@@ -275,6 +280,7 @@ void button_callback(int pin, button_event_t event)
     else if (event == BUTTON_PRESS_SHORT)
     {
         notify_value |= EVT_BTN_CLICKED;
+        alerts_clear_alert();
     }
 
     xTaskNotify(xMainTaskHandle, notify_value, eSetBits);
@@ -282,28 +288,20 @@ void button_callback(int pin, button_event_t event)
 
 esp_err_t check_safe_clean_alerts()
 {
-    static uint8_t hysteresis;
 
-    if (alert_status != ALERT_NONE)
-    {
-        if (night_mode == 1 && current_read.lux > LUX_NIGHT_MAX)
-            return ESP_ERR_INVALID_STATE;
-        else if (current_read.lux > LUX_DAY_MAX || current_read.lux < LUX_DAY_MIN)
-            return ESP_ERR_INVALID_STATE;
-        else if (current_read.temperature > TEMP_MAX || current_read.temperature < TEMP_MIN)
-            return ESP_ERR_INVALID_STATE;
-        else if (current_read.humidity > HUM_MAX || current_read.humidity < HUM_MIN)
-            return ESP_ERR_INVALID_STATE;
-        else if (current_read.noise_level >= NOISE_AVG_LIMIT)
-            return ESP_ERR_INVALID_STATE;
-        else if (hysteresis >= 5)
-        {
-            hysteresis = 0;
-            return ESP_OK;
-        }
-        else
-            hysteresis++;
-    }
+    if (alert_status == ALERT_NONE)
+        return ESP_ERR_NOT_ALLOWED;
 
-    return ESP_ERR_NOT_ALLOWED;
+    if (night_mode == 1 && current_read.lux > LUX_NIGHT_MAX)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.lux > LUX_DAY_MAX || current_read.lux < LUX_DAY_MIN)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.temperature > TEMP_MAX || current_read.temperature < TEMP_MIN)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.humidity > HUM_MAX || current_read.humidity < HUM_MIN)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.noise_level >= NOISE_AVG_LIMIT)
+        return ESP_ERR_INVALID_STATE;
+
+    return ESP_OK;
 }

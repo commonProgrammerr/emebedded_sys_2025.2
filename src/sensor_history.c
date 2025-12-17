@@ -80,8 +80,8 @@ void full_to_compact(const full_sensor_read_t *full, compact_sensor_read_t *comp
     if (!full || !compact) {
         return;
     }
-    compact->temperature = TEMP_TO_RAW(full->temperature);
-    compact->humidity = HUMID_TO_RAW(full->humidity);
-    compact->lux = LUX_TO_RAW(full->lux);
-    compact->noise_level = NOISE_TO_RAW(full->noise_level);
+    compact->temperature = full->temperature > MAX_TEMP ? MAX_TEMP_RAW : TEMP_TO_RAW(full->temperature);
+    compact->humidity = full->humidity > MAX_HUMID ? MAX_HUMID_RAW : HUMID_TO_RAW(full->humidity);
+    compact->lux = full->lux > MAX_LUX ? MAX_LUX_RAW : LUX_TO_RAW(full->lux);
+    compact->noise_level = full->noise_level > MAX_NOISE ? MAX_NOISE_RAW : NOISE_TO_RAW(full->noise_level);
 }

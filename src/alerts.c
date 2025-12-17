@@ -10,6 +10,7 @@ static TaskHandle_t xAlertTaskHandle = NULL;
 static bool snooze_active = false;
 static const char* alerts_tags[3] = {"NONE", "WARNING", "CRITICAL"};
 static uint32_t current_snooze_duration = 0;
+static SemaphoreHandle_t alert_mutex = NULL;
 alert_t alert_status;
 
 static void set_buzzer(bool on);
@@ -18,7 +19,13 @@ static void task_alert(void* args);
 static void task_alert(void* args) {
     for(;;) {
         if (xTaskNotifyWait(0, 0, NULL, portMAX_DELAY) == pdTRUE) {
-            switch (alert_status)
+            if (xSemaphoreTake(alert_mutex, portMAX_DELAY) != pdTRUE) {
+                continue;
+            }
+            alert_t current_status = alert_status;
+            xSemaphoreGive(alert_mutex);
+            
+            switch (current_status)
             {
             case ALERT_NONE:
                 gpio_set_level(WARNING_STATE_GPIO, 0);
@@ -33,7 +40,9 @@ static void task_alert(void* args) {
             case ALERT_CRITICAL:
                 gpio_set_level(WARNING_STATE_GPIO, 0);
                 gpio_set_level(CRITICAL_STATE_GPIO, 1);
-                while (alert_status == ALERT_CRITICAL)
+                
+                bool is_critical = true;
+                while (is_critical)
                 {
                     set_buzzer(true);
                     BaseType_t abort = xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(500));
@@ -52,6 +61,12 @@ static void task_alert(void* args) {
                         current_snooze_duration = 0;
                         if (abort == pdTRUE)
                             break;
+                    }
+                    
+                    // Check if still critical
+                    if (xSemaphoreTake(alert_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                        is_critical = (alert_status == ALERT_CRITICAL);
+                        xSemaphoreGive(alert_mutex);
                     }
                 }
                 break;
@@ -95,6 +110,13 @@ esp_err_t alerts_init() {
     };
 
     ledc_channel_config(&ledc_channel);
+    
+    alert_mutex = xSemaphoreCreateMutex();
+    if (alert_mutex == NULL) {
+        ESP_LOGE(TAG, "Falha ao criar mutex de alerta");
+        return ESP_ERR_NO_MEM;
+    }
+    
     alert_status = ALERT_NONE;
 
     xTaskCreate(task_alert, "AlertWatchdog", 4096, NULL, 5, &xAlertTaskHandle);
@@ -108,11 +130,19 @@ esp_err_t alerts_send_alert(alert_t type, const char* message) {
 
     ESP_LOGW(TAG, "[%s] %s", alerts_tags[type], message);
     
+    if (xSemaphoreTake(alert_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Timeout ao adquirir mutex de alerta");
+        return ESP_ERR_TIMEOUT;
+    }
+    
     if (type <= alert_status) {
+        xSemaphoreGive(alert_mutex);
         return ESP_OK; // Não rebaixar o nível de alerta
     }
     
     alert_status = type;
+    xSemaphoreGive(alert_mutex);
+    
     if (xAlertTaskHandle == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -121,9 +151,17 @@ esp_err_t alerts_send_alert(alert_t type, const char* message) {
 }
 
 esp_err_t alerts_clear_alert() {
+    if (xSemaphoreTake(alert_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Timeout ao adquirir mutex de alerta");
+        return ESP_ERR_TIMEOUT;
+    }
+    
     alert_status = ALERT_NONE;
     snooze_active = false;
+    xSemaphoreGive(alert_mutex);
+    
     ESP_LOGI(TAG, "Alerta limpo");
+
     if (xAlertTaskHandle == NULL) {
         return ESP_ERR_INVALID_STATE;
     }

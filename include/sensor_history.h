@@ -16,6 +16,16 @@
 #define NOISE_TO_RAW(noise) ((uint8_t)(noise))
 #define RAW_TO_NOISE(raw) ((float)(raw))
 
+#define MAX_TEMP (50.0f)
+#define MAX_HUMID (100.0f)
+#define MAX_LUX (2047.5f)
+#define MAX_NOISE (100.0f)
+
+#define MAX_TEMP_RAW TEMP_TO_RAW(MAX_TEMP)
+#define MAX_HUMID_RAW HUMID_TO_RAW(MAX_HUMID)
+#define MAX_LUX_RAW LUX_TO_RAW(MAX_LUX)
+#define MAX_NOISE_RAW NOISE_TO_RAW(MAX_NOISE)
+
 // Compact data structure using bit-fields (4 bytes total)
 typedef struct compact_sensor_read {
     uint8_t temperature : 6;   // 0 to 50,    step 1.0   -> 51 values (needs 6 bits: 2^6=64)
@@ -23,6 +33,14 @@ typedef struct compact_sensor_read {
     uint16_t lux : 12;         // 0 to 2047,  step 0.5   -> 4096 values (needs 12 bits: 2^12=4096)
     uint8_t noise_level : 7;   // 0 to 100,   step 1.0   -> 101 values (needs 7 bits: 2^7=128)
 } __packed compact_sensor_read_t;
+
+// Minimal data structure using bit-fields (2 bytes total)
+typedef struct minimal_sensor_read {
+    uint8_t temperature : 5;   // 0 to 50,    step ~1.6  -> 32 values (needs 5 bits: 2^5=32)
+    uint8_t humidity : 5;      // 0 to 100,   step ~3.2  -> 32 values (needs 5 bits: 2^5=32)
+    uint8_t lux : 4;           // 0 to 2047,  step ~136  -> 16 values (needs 4 bits: 2^4=16)
+    uint8_t noise_level : 2;   // 0 to 100,   step ~33   -> 4 values (needs 2 bits: 2^2=4)
+} __packed minimal_sensor_read_t;
 
 typedef struct full_sensor_read {
     float temperature;   // in °C
