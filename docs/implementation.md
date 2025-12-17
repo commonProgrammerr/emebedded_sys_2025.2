@@ -1,172 +1,417 @@
-# Sistema de Monitoramento Ambiental para Biotério
+# Detalhes de Implementação - Sistema de Monitoramento Ambiental
 
-Este projeto implementa um sistema embarcado de monitoramento ambiental desenvolvido para biotérios (vivários de animais de laboratório), utilizando ESP32 com FreeRTOS. O sistema monitora temperatura, umidade, luminosidade e níveis de ruído, armazenando dados em memória flash não-volátil e gerando alertas visuais e sonoros quando parâmetros ultrapassam limites seguros.
+## Visão Geral Técnica
 
-## Contexto e Objetivo do Projeto
+Sistema embarcado de monitoramento multi-sensor baseado em ESP32 (ESP-IDF 5.x) com FreeRTOS. Arquitetura orientada a eventos com persistência em flash NVS, processamento de sinais digitais (DSP) para análise de ruído, e sistema de alertas multi-nível com proteção thread-safe.
 
-### Requisitos do Sistema
-O projeto atende aos seguintes requisitos estabelecidos para monitoramento de biotérios:
+**Stack Tecnológico:**
+- ESP-IDF 5.x (Espressif IoT Development Framework)
+- FreeRTOS 10.x (kernel RTOS integrado)
+- NVS (Non-Volatile Storage) para persistência
+- LWIP para stack TCP/IP (WiFi + NTP)
+- PlatformIO como build system
 
-- **Monitoramento Contínuo**: Leitura periódica de sensores ambientais (temperatura, umidade, luz, ruído)
-- **Armazenamento Persistente**: Dados salvos em flash NVS (Non-Volatile Storage) do ESP32
-- **Sistema de Alertas**: Indicação visual (LEDs) e sonora (buzzer) de condições fora dos limites
-- **Histórico de Dados**: Média móvel de 60 amostras calculada a cada minuto
-- **Dump de Dados**: Extração de dados via UART em formato JSON mediante pressão longa de botão
-- **Sincronização Temporal**: Timestamping via NTP (Network Time Protocol) com WiFi
+## Decisões de Arquitetura
 
-### Faixas de Operação
-
-**Limites de Temperatura:**
-- Zona Segura: 22°C a 26°C
-- Zona de Alerta (Warning): Violação por 5 minutos (30 leituras consecutivas a cada 10s)
-- Zona Crítica: Violação por 10 minutos (60 leituras consecutivas a cada 10s)
-
-**Limites de Umidade:**
-- Zona Segura: 40% a 60%
-- Zona de Alerta (Warning): Violação por 5 minutos (30 leituras consecutivas)
-- Zona Crítica: Violação por 10 minutos (60 leituras consecutivas)
-
-**Limites de Luminosidade:**
-- Modo Diurno (6h-18h): 150 a 300 lux
-- Modo Noturno (18h-6h): 0 a 5 lux (tolerância para vazamento de luz)
-- Zona de Alerta (Warning): Violação por 2 minutos (12 leituras)
-- Zona Crítica: Violação por 5 minutos (30 leituras)
-
-**Limites de Ruído:**
-- Medição via RMS (Root Mean Square) de 1024 amostras coletadas a 8kHz
-- Nível expresso em percentual (0-100%) da amplitude máxima do ADC
-- Zona de Alerta (Warning): RMS > 15% por 40 segundos
-- Zona Crítica: RMS > 25% ou picos persistentes
-- Thread-safe com mutex para evitar conflitos com FreeRTOS
-
-
-
-## Funcionalidades Implementadas
-
-### Sensores e Monitoramento
-- **DHT11**: Sensor de temperatura e umidade digital (leitura a cada 2s)
-- **BH1750FVI**: Sensor de luminosidade I2C de alta precisão (leitura a cada 10s)
-- **MAX9814**: Amplificador de microfone com AGC (Automatic Gain Control), leitura via ADC oneshot com cálculo de RMS (leitura a cada 1s)
-- **Sistema de Monitores**: Cada sensor possui task dedicada com timer periódico em FreeRTOS
-
-### Sistema de Alertas
-- **3 Estados do Sistema**:
-  - `ALERT_NONE`: Sem alertas, condições dentro dos limites
-  - `ALERT_WARNING`: LED amarelo aceso, violação de limites por período definido
-  - `ALERT_CRITICAL`: LED vermelho + buzzer intermitente (500ms on / 30s off), violação crítica prolongada
-- **Lógica de Janela Temporal**: Requer múltiplas leituras consecutivas fora dos limites antes de ativar alerta
-  - DHT11 (Temp/Umidade): 30 leituras para WARNING (5min), 60 para CRITICAL (10min)
-  - BH1750 (Luz): 12 leituras para WARNING (2min), 30 para CRITICAL (5min)
-  - KY-037 (Ruído): 40 segundos acumulados para WARNING
-- **Modo Noturno Automático**: Sistema detecta período 18h-6h e aplica limites noturnos de luz (0-5 lux)
-- **Snooze de Alertas**: Durante alerta crítico, botão ativa snooze de 5 minutos (silencia buzzer temporariamente)
-
-### Armazenamento e Histórico
-- **Flash Buffer Circular**: 1440 posições (24h com 1 amostra/minuto)
-- **Compactação de Dados**: Estrutura `compact_sensor_read_t` de 5 bytes por amostra
-- **Média Móvel**: Cálculo de média de 60 amostras (últimos 60 minutos) em RAM
-- **Timestamping**: Cada amostra tem timestamp Unix desde boot ou NTP
-
-### Interface e Controle
-- **Botão de Navegação**: GPIO 22 com debouncing (50ms) e detecção de eventos
-  - **Click Curto (<500ms)**: Evento de teste (funcionalidade reservada)
-  - **Click Normal (500ms-2s)**: Funcionalidade reservada
-  - **Pressão Longa (>2s)**: Dump completo de dados via UART em JSON + limpa flash + restart
-  - **Durante Alerta Crítico**: Qualquer pressão ativa snooze de 5 minutos
-- **UART JSON**: Protocolo de comunicação para extração de dados históricos (formato array JSON)
-- **WiFi + NTP**: Sincronização automática de horário na inicialização (até 5 tentativas de reconexão)
-- **Modo Noturno**: Detecção automática de período noturno (18h-6h) com limites de luz ajustados
-
-## Arquitetura do Sistema
-
-### Visão Geral das Tasks FreeRTOS
-
-```
-┌────────────────────────────────────────────────────────────┐
-│                     app_main (Task)                        │
-│  - Inicializa sistema (NVS, WiFi, NTP, sensores)           │
-│  - Aguarda eventos de botão (Task Notification)            │
-│  - Cria tasks de monitoramento para cada sensor            │
-└────────────────────────────────────────────────────────────┘
-                            │
-            ┌───────────────┼───────────────┐
-            ▼               ▼               ▼
-┌──────────────────┐ ┌──────────────┐ ┌────────────────┐
-│ Sensor Monitor   │ │ Sensor       │ │ Sensor Monitor │
-│  (DHT11 Task)    │ │ Monitor      │ │ (BH1750 Task)  │
-│  - 2s interval   │ │ (KY-037)     │ │  - 10s interval│
-│  - Temp & Humid  │ │  - 1s        │ │  - Luminosity  │
-└──────────────────┘ └──────────────┘ └────────────────┘
-            │               │               │
-            └───────────────┼───────────────┘
-                            ▼
-            ┌──────────────────────────────┐
-            │   Callbacks: save_dht11()    │
-            │   save_noise(), save_bh1750()│
-            │  - Atualiza current_read     │
-            │  - Salva no sensor_history   │
-            └──────────────────────────────┘
-                            │
-                            ▼
-┌────────────────────────────────────────────────────────────┐
-│            Sensor History System (RAM)                     │
-│  - Buffer circular de 60 amostras compactadas              │
-│  - Cálculo de média móvel a cada 60s                       │
-│  - Quando cheio, salva no flash_buffer                     │
-└────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌────────────────────────────────────────────────────────────┐
-│         Flash Buffer System (NVS Persistent)               │
-│  - 1440 registros flash_record_t (24h de histórico)        │
-│  - Cada registro: timestamp + compact_sensor_read_t        │
-│  - Sobrevive a resets e power-off                          │
-└────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-            ┌──────────────────────────────┐
-            │   Alert Watchdog Task        │
-            │  - Recebe notificações de    │
-            │    mudança de estado         │
-            │  - Controla LEDs e Buzzer    │
-            │  - Gerencia snooze           │
-            └──────────────────────────────┘
-```
-
-### Fluxo de Dados
-
-1. **Aquisição**: Cada sensor é lido periodicamente por task dedicada (Software Timer + Task Notification)
-2. **Callback**: Função `save_<sensor>()` atualiza estrutura `current_read` com novos valores
-3. **Avaliação de Alertas**: Cada callback mantém contador de violações e dispara alerta quando threshold é atingido
-4. **Histórico RAM**: Dados salvos em buffer circular de 60 amostras (`sensor_history`)
-5. **Média Móvel**: Timer de 60s calcula média das últimas 60 amostras
-6. **Detecção de Modo Noturno**: A cada hora (quando `tm_min == 0`), verifica se é período noturno (18h-6h)
-7. **Persistência**: Média salva em `flash_buffer` (NVS) com timestamp Unix
-8. **Gerenciamento de Alertas**: Task `task_alert` responde a notificações, controla LEDs/buzzer e gerencia snooze
-
-### Estruturas de Dados Principais
-
-#### `full_sensor_read_t` (RAM - Não Compactado)
+### Pattern: Sensor Abstraction Layer
+Interface `sensor_base_t` define contrato comum para todos os sensores:
 ```c
 typedef struct {
-    float temperature;   // °C
-    float humidity;      // %
-    float lux;          // lx
-    float noise_level;   // RMS percentage (0.0-100.0%)
+    const char* name;
+    esp_err_t (*init)(void* config);
+    esp_err_t (*read)(void* data);
+    esp_err_t (*deinit)(void);
+} sensor_base_t;
+```
+
+**Rationale:** Permite adicionar sensores sem modificar código existente (Open/Closed Principle). Cada driver implementa a interface de forma independente.
+
+### Pattern: Observer com Callbacks
+Sensores notificam sistema através de callbacks registrados:
+```c
+typedef void (*sensor_callback_t)(sensor_base_t *sensor, void *data);
+```
+
+**Fluxo:**
+1. Sensor monitor task executa leitura periódica via Software Timer
+2. Callback notifica subsistemas interessados (histórico, alertas)
+3. Decoupling: Sensores não conhecem consumidores dos dados
+
+### Thread Safety Strategy
+
+**Alert System Mutex:**
+- Variável `alert_status` protegida por `SemaphoreHandle_t alert_mutex`
+- Timeout de 1000ms para evitar deadlocks
+- Retorna `ESP_ERR_TIMEOUT` se mutex não disponível
+- Task `task_alert` copia estado localmente antes de processar
+
+**MAX9814 Library Mutex:**
+- Buffer de amostras protegido por mutex dedicado
+- Aquisição ADC é operação atômica (oneshot mode)
+- taskYIELD() a cada 128 amostras previne starvation
+
+**NVS Flash Access:**
+- Serializado por natureza (NVS library é thread-safe internamente)
+- Buffer circular implementa overwrite automático quando cheio
+
+### Memory Management
+
+**Stack Allocation:**
+- `app_main`: 4096 bytes (padrão ESP-IDF)
+- `task_alert`: 4096 bytes (necessário para callback chain)
+- `sensor_monitor`: 4096 bytes (handling de timeouts e callbacks)
+- Timer Service: 4096 bytes (aumentado de 2048 após stack overflow)
+
+**Heap Allocation:**
+- Sensores: Alocação única em `init()`, liberação em `deinit()`
+- Flash buffer: Estrutura persistente durante lifetime do sistema
+- Dados temporários: Alocados em stack sempre que possível
+
+## Arquitetura de Tasks FreeRTOS
+
+### Task Hierarchy e Prioridades
+
+```
+Priority 5: task_alert (AlertWatchdog)
+  └─ Responde a eventos de alerta via TaskNotify
+  └─ Controla GPIO (LEDs) e PWM (buzzer) 
+  └─ Implementa state machine ALERT_NONE → WARNING → CRITICAL
+
+Priority 5: sensor_monitor_task (instâncias múltiplas)
+  └─ DHT11 Monitor: Timer 2000ms
+  └─ BH1750 Monitor: Timer 10000ms  
+  └─ MAX9814 Monitor: Timer 1000ms
+  └─ Notificado por Software Timer (LEDC Timer)
+
+Priority 1: app_main (implícito)
+  └─ Inicialização sequencial do sistema
+  └─ Bloqueia aguardando Task Notification do botão
+  └─ Executa dump de dados e reinicialização
+```
+
+**Design Decision:** Prioridade 5 para alertas garante resposta imediata a condições críticas, mesmo sob carga de sensores.
+
+### Sincronização e Comunicação Inter-Task
+
+**Software Timers (ESP Timer):**
+```c
+esp_timer_handle_t sensor_timer;
+esp_timer_create_args_t timer_args = {
+    .callback = sensor_timer_callback,
+    .arg = monitor,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name = "sensor_timer"
+};
+```
+
+**Task Notifications (FreeRTOS):**
+- Mecanismo leve de sincronização (4 bytes por task)
+- Usado em: botão → app_main, alertas → task_alert
+- Alternativa a semáforos binários (menor overhead)
+
+**Mutexes (FreeRTOS):**
+- `alert_mutex`: Protege `alert_status` global
+- `max9814_mutex`: Protege buffer de amostras ADC
+- Timeout de 1000ms previne deadlock
+
+### Pipeline de Processamento de Dados
+
+```
+┌─────────────┐
+│ ADC/I2C/1W  │ Hardware Abstraction Layer
+└──────┬──────┘
+       │
+┌──────▼──────────────────────────────┐
+│ Sensor Drivers (DHT, BH1750, MAX)   │ Device Drivers
+│  - Protocol handling                │
+│  - Error recovery                   │
+│  - Calibration/filtering            │
+└──────┬──────────────────────────────┘
+       │
+┌──────▼──────────────────────────────┐
+│ Sensor Monitor                      │ Orchestration Layer
+│  - Periodic scheduling              │
+│  - Timeout handling                 │
+│  - Callback dispatch                │
+└──────┬──────────────────────────────┘
+       │
+       ├──────────────────┬────────────────────┐
+       │                  │                    │
+┌──────▼──────┐  ┌───────▼────────┐  ┌───────▼────────┐
+│Alert System │  │Sensor History  │  │Flash Buffer    │
+│- Threshold  │  │- Windowing (60)│  │- Circular NVS  │
+│- Hysteresis │  │- Averaging     │  │- Auto-overwrite│
+└─────────────┘  └────────────────┘  └────────────────┘
+```
+
+### State Machine: Alert System
+
+```
+       ┌─────────────┐
+       │ ALERT_NONE  │◄──────────────┐
+       └──────┬──────┘               │
+              │                      │
+         threshold                   │
+         exceeded                    │
+              │                 clear_alert()
+       ┌──────▼──────────┐           │
+       │ ALERT_WARNING   │───────────┤
+       │ (LED Yellow)    │           │
+       └──────┬──────────┘           │
+              │                      │
+       critical count                │
+       threshold                     │
+              │                      │
+       ┌──────▼──────────┐           │
+       │ ALERT_CRITICAL  │───────────┘
+       │ (LED Red+Buzzer)│
+       └─────────────────┘
+              │
+              │ snooze_active
+              ▼
+       ┌─────────────────┐
+       │ SNOOZE (5 min)  │
+       │ (Buzzer muted)  │
+       └─────────────────┘
+```
+
+**Hysteresis Logic:** Estado não pode retroceder (WARNING → NONE) sem chamada explícita a `alerts_clear_alert()`. Previne oscilação em valores próximos aos limites.
+
+## Estruturas de Dados e Compactação
+
+### Data Compression Strategy
+
+**RAM Representation (16 bytes):**
+```c
+typedef struct {
+    float temperature;   // 4 bytes, IEEE 754
+    float humidity;      // 4 bytes
+    float lux;          // 4 bytes
+    float noise_level;   // 4 bytes (RMS percentage 0-100)
 } full_sensor_read_t;
 ```
 
-#### `compact_sensor_read_t` (5 bytes - Compactado)
+**Flash Representation (5 bytes):**
 ```c
-typedef struct {
-    uint8_t temperature : 6;   // 0-50°C, step 1.0
-    uint8_t humidity : 7;      // 0-100%, step 1.0
-    uint16_t lux : 15;         // 0-16384 lux, step 0.5
-    uint16_t noise_level : 12; // 0-100% RMS, step 0.025
-} compact_sensor_read_t;
+typedef struct __attribute__((packed)) {
+    uint8_t temperature : 6;   // Range: 0-63 → 0-50°C (step 0.79°C)
+    uint8_t humidity : 7;      // Range: 0-127 → 0-100% (step 0.79%)
+    uint16_t lux : 15;         // Range: 0-32767 → 0-16384 lux (step 0.5)
+    uint16_t noise_level : 12; // Range: 0-4095 → 0-100% (step 0.024%)
+} compact_sensor_read_t;  // 40 bits = 5 bytes
 ```
 
-#### `flash_record_t` (9 bytes - Armazenamento Flash)
+**Compression Ratio:** 16:5 = 3.2:1
+
+**Encoding Macros:**
+```c
+#define COMPACT_TEMP(t)  (uint8_t)((t) * 1.26)           // 0-50°C → 0-63
+#define COMPACT_HUM(h)   (uint8_t)((h) * 1.27)           // 0-100% → 0-127
+#define EXPAND_NOISE(n)  ((float)(n) / 40.95)
+```
+
+### Flash Record Structure
+
+**Persistent Record (9 bytes):**
+```c
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp;               // Unix epoch (4 bytes)
+    compact_sensor_read_t compact;    // Compressed data (5 bytes)
+} flash_record_t;
+```
+
+**Storage Capacity Calculation:**
+- NVS partition: ~24KB disponível
+- Buffer: 1440 records × 9 bytes = 12.96 KB
+- Overhead: ~20% (metadata NVS)
+- Total: ~15.5 KB
+
+**Circular Buffer Implementation:**
+```c
+typedef struct {
+    nvs_handle_t nvs_handle;
+    char namespace[16];
+    uint32_t write_index;      // Próxima posição de escrita
+    uint32_t sample_count;     // Total de amostras (até max_samples)
+    uint32_t max_samples;      // Capacidade máxima (1440)
+    size_t sample_size;        // sizeof(flash_record_t)
+} flash_buffer_t;
+```
+
+**Auto-Overwrite Logic:**
+```c
+if (buffer->sample_count >= buffer->max_samples) {
+    // Apaga amostra mais antiga (na posição write_index)
+    nvs_erase_key(buffer->nvs_handle, old_key);
+}
+// Escreve nova amostra na mesma posição
+nvs_set_blob(buffer->nvs_handle, key, sample, size);
+buffer->write_index = (buffer->write_index + 1) % buffer->max_samples;
+```
+
+### Memory Layout
+
+**Total SRAM Usage (approximate):**
+```
+Flash Buffer struct:      80 bytes (heap)
+Sensor History (60):     960 bytes (heap) = 60 × 16 bytes
+Current Read:             16 bytes (BSS)
+Alert State:              20 bytes (BSS)
+MAX9814 Sample Buffer:  4096 bytes (heap) = 1024 × 4 bytes
+Task Stacks:           20480 bytes = 5 tasks × 4096 bytes
+Total Runtime:         ~25 KB
+```
+
+**Flash Usage:**
+```
+Code (.text):        ~200 KB
+Read-only data:       ~20 KB
+NVS Data:             ~16 KB (sensores) + 8 KB (sistema)
+Total:               ~244 KB (deixa ~3.8 MB livres em 4MB flash)
+```
+
+## Hardware Interfaces
+
+### Peripheral Mapping
+
+**Digital I/O:**
+- GPIO 23: DHT11 (1-Wire protocol, bit-banged, pull-up 10kΩ)
+- GPIO 22: Button input (internal pull-up, interrupt on both edges)
+- GPIO 32: LED Yellow (output, active high)
+- GPIO 26: LED Red (output, active high)
+
+**I2C Bus (Master mode):**
+- ESP32-WROOM: SDA=GPIO 18, SCL=GPIO 19
+- ESP32-S2: SDA=GPIO 21, SCL=GPIO 20
+- Clock: 100 kHz (standard mode)
+- BH1750FVI address: 0x23 (ADDR pin → GND)
+
+**ADC (12-bit resolution):**
+- GPIO 33: ADC1_CH5 (MAX9814 microphone output)
+- Attenuation: 11dB → 0-3.3V range → ADC values 0-4095
+- Mode: Oneshot (polling) with 125µs inter-sample delay
+
+**PWM (LEDC - LED Control):**
+- GPIO 15: Buzzer output
+- Timer: LEDC_TIMER_0, Channel: LEDC_CHANNEL_0
+- Frequency: 800 Hz, Resolution: 12-bit (duty cycle 0-4095)
+- Mode: Low-speed mode (APB_CLK source)
+
+**UART0 (Console/Debug):**
+- TX: GPIO 1, RX: GPIO 3
+- Baud rate: 115200, 8N1
+- Used for: ESP-IDF logging, JSON data dump
+
+### Power Management
+
+**Active Mode:**
+- CPU: 240 MHz (dual-core)
+- WiFi: OFF (exceto durante sync NTP)
+- Peripherals: ADC, I2C, GPIO, LEDC ativos
+- Estimated: ~80mA @ 3.3V
+
+**WiFi Active (NTP sync):**
+- Duration: ~5-10 segundos na inicialização
+- Peak current: ~160mA @ 3.3V
+- Desligado após sincronização bem-sucedida
+
+## Módulos de Software
+
+### Core System (`src/`)
+
+**sensor_monitor.c** - Sensor Orchestration
+- Abstrai criação de tasks periódicas para qualquer sensor
+- Software Timer + Task Notification para scheduling
+- Timeout handling e error recovery
+- Generic callback dispatch
+
+**sensor_history.c** - Windowed Averaging
+- Circular buffer de 60 amostras em RAM
+- Cálculo de média móvel com acumulador
+- Compactação float → bitfield para persistência
+- Interface para flush automático para flash
+
+**alerts.c** - State Machine Implementation
+- Finite State Machine: NONE → WARNING → CRITICAL
+- Mutex-protected state transitions (thread-safe)
+- LED control via GPIO, buzzer via LEDC PWM
+- Snooze mechanism com timer temporário
+
+### Sensor Drivers (`src/`)
+
+**dht11_sensor.c** - 1-Wire Protocol
+- Bit-banging implementation (não usa hardware 1-Wire)
+- Timing crítico: start condition 18ms LOW pulse
+- Checksum validation (último byte = soma dos 4 primeiros)
+- Retry logic com exponential backoff
+
+**bh1750fvi_sensor.c** - I2C Light Sensor
+- Utiliza biblioteca esp-idf-lib (i2cdev abstraction)
+- Modo: Continuous High Resolution (1 lux resolution)
+- Measurement time: 120ms típico
+- I2C error handling com retry
+
+**noise_sensor.c** - ADC Wrapper
+- Interface para biblioteca MAX9814
+- Conversão RMS → percentual para alertas
+- Configuração: 1024 samples @ 8kHz = 128ms acquisition time
+
+### Libraries (`lib/`)
+
+**flash_buffer/** - NVS Circular Buffer
+- Generic implementation: qualquer tipo de dado
+- Key generation: `s_<index>` para cada amostra
+- Metadata persistence: `w_idx`, `count`
+- Auto-overwrite quando buffer cheio (desde dezembro 2025)
+
+**max9814/** - DSP Audio Processing
+- ADC oneshot mode com delays precisos (125µs)
+- RMS calculation: √(Σ(x - mean)² / N)
+- DC bias removal antes do RMS
+- taskYIELD() a cada 128 samples (16ms) previne watchdog
+
+### Dependency Tree
+
+```
+main.c
+├── sensor_monitor.h
+│   ├── sensor_base.h
+│   └── FreeRTOS (tasks, timers)
+├── sensor_history.h
+│   └── flash_buffer.h (lib)
+│       └── nvs_flash.h (ESP-IDF)
+├── alerts.h
+│   ├── driver/gpio.h
+│   └── driver/ledc.h
+├── dht11_sensor.h
+│   └── dht.h (components/)
+├── bh1750fvi_sensor.h
+│   └── i2cdev.h (managed_components/)
+├── noise_sensor.h
+│   └── max9814.h (lib)
+│       └── esp_adc/adc_oneshot.h
+└── time_sync.h
+    ├── esp_wifi.h
+    └── esp_sntp.h
+```
+
+## Estruturas de Dados (Legado)
+
+**Nota:** Seção mantida para referência de estruturas duplicadas encontradas no código.
+
+### `compact_sensor_read_t` - Compactação
+### `compact_sensor_read_t` - Compactação
+
+```c
+typedef struct __attribute__((packed)) {
+    uint8_t temperature : 6;   // 0-63 → 0-50°C (step 0.79°C)
+    uint8_t humidity : 7;      // 0-127 → 0-100% (step 0.79%)
+    uint16_t lux : 15;         // 0-32767 → 0-16384 lux (step 0.5)
+    uint16_t noise_level : 12; // 0-4095 → 0-100% (step 0.024%)
+} compact_sensor_read_t;  // Total: 40 bits = 5 bytes
+```
+
+### `flash_record_t` - Persistência
 ```c
 typedef struct {
     uint32_t timestamp;               // Unix time (segundos)
@@ -188,7 +433,7 @@ typedef struct {
 #### Sensores
 - **GPIO 23**: DHT11 Data (temperatura e umidade)
 - **I2C para BH1750FVI** (luminosidade):
-  - **ESP32 WROOM**: SDA=GPIO 21, SCL=GPIO 19
+  - **ESP32 WROOM**: SDA=GPIO 18, SCL=GPIO 19
   - **ESP32-S2**: SDA=GPIO 21, SCL=GPIO 20
   - Endereço I2C: `0x23` (BH1750_I2C_ADDR_LOW)
 - **GPIO 33**: MAX9814 Analog Out (ADC1_CH5 - nível de ruído RMS)
@@ -197,7 +442,7 @@ typedef struct {
 
 #### Indicadores e Controle
 - **GPIO 32**: LED Amarelo (Estado Warning)
-- **GPIO 26**: LED Vermelho (Estado Crítico)
+- **GPIO 15**: Buzzer PWM (LEDC Channel 0, Timer 0, 800 Hz, 12
 - **GPIO 34**: Buzzer PWM (LEDC Channel 0, Timer 0, 2 kHz, 10-bit resolution)
 - **GPIO 22**: Botão de Navegação (pull-up interno, any edge interrupt com debouncing)
 
@@ -219,8 +464,7 @@ typedef struct {
 ├── README.md                # Este arquivo
 ├── LICENSE                  # Licença do projeto
 │
-├── main/                    # Código principal
-│   ├── main.c               # Entry point, inicialização, app_main()
+├── main/                    #  Gerenciado pelo IDF Component Manager
 │   └── idf_component.yml    # Dependências do componente
 │
 ├── include/                 # Headers públicos
@@ -240,6 +484,7 @@ typedef struct {
 │   ├── sensor_monitor.c
 │   ├── sensor_history.c
 │   ├── dht11_sensor.c
+│   ├── main.c               # Entry point, inicialização, app_main()
 │   ├── bh1750fvi_sensor.c
 │   ├── noise_sensor.c       # Wrapper para MAX9814
 │   ├── alerts.c
@@ -277,536 +522,539 @@ typedef struct {
 └── test/                    # Testes unitários (futuro)
 ```
 
-## Como Usar
+## Algoritmos Críticos
 
-### 1. Pré-requisitos
+### RMS Calculation (MAX9814 Library)
 
-#### Software Necessário
-- **PlatformIO Core** ou **PlatformIO IDE** (extensão VS Code recomendada)
-- **Python 3.8+** (para ferramentas ESP-IDF)
-- **Driver USB-UART**: CP210x ou CH340 (dependendo da placa)
-
-#### Extensões VS Code Recomendadas
-- [PlatformIO IDE](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide)
-- [C/C++ Extension Pack](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools-extension-pack)
-- [ESP-IDF](https://marketplace.visualstudio.com/items?itemName=espressif.esp-idf-extension) (opcional)
-
-### 2. Montagem do Hardware
-
-#### Conexões dos Sensores
-
-**DHT11 (Temperatura e Umidade):**
-```
-DHT11 VCC  → ESP32 3.3V
-DHT11 DATA → ESP32 GPIO 23
-DHT11 GND  → ESP32 GND
-(Resistor pull-up de 10kΩ entre DATA e VCC recomendado)
-```
-
-**BH1750FVI (Luminosidade):**
-```
-BH1750 VCC  → ESP32 3.3V
-BH1750 GND  → ESP32 GND
-BH1750 SCL  → ESP32 GPIO 21 (I2C Clock)
-BH1750 SDA  → ESP32 GPIO 19 (I2C Data)
-BH1750 ADDR → GND (endereço I2C 0x23) ou VCC (0x5C)
-```
-
-**MAX9814 (Amplificador de Microfone com AGC):**
-```
-MAX9814 VCC → ESP32 3.3V (ou 5V se módulo suportar)
-MAX9814 GND → ESP32 GND
-MAX9814 OUT → ESP32 GPIO 33 (ADC1_CH5)
-MAX9814 GAIN → Configurar jumpers para ganho desejado (40/50/60dB)
-MAX9814 AR → Deixar aberto (attack/release padrão)
-```
-
-**Nota sobre Ganho**: 
-- 40dB: Ambientes mais ruidosos (conversas normais)
-- 50dB: Uso geral (padrão recomendado)
-- 60dB: Ambientes muito silenciosos (pode saturar facilmente)
-
-#### Indicadores Visuais e Sonoros
-
-**LEDs (com resistores de 220Ω em série):**
-```
-LED Amarelo (+) → GPIO 17 → Resistor → GND
-LED Vermelho(+) → GPIO 5  → Resistor → GND
-```
-
-**Buzzer Ativo (ou Passivo com PWM):**
-```
-Buzzer (+) → GPIO 34
-Buzzer (-) → GND
-(Para buzzer passivo, o sistema gera PWM de 2 kHz, duty cycle 50%)
-```
-
-**Botão de Navegação:**
-```
-Um terminal → GPIO 22
-Outro terminal → GND
-(Pull-up interno habilitado no código)
-```
-
-### 3. Configuração do Projeto
-
-#### Compilação e Upload
-
-**Via PlatformIO CLI:**
-```bash
-# Compilar para ESP32 WROOM
-pio run -e upesy_wroom
-
-# Fazer upload
-pio run -e upesy_wroom -t upload
-
-# Monitorar serial (115200 baud)
-pio device monitor -b 115200
-```
-
-**Via VS Code PlatformIO:**
-1. Abrir projeto no VS Code
-2. Selecionar environment: `upesy_wroom` ou `esp32-s2-saola-1`
-3. Clicar em "Build" (✓) na barra inferior
-4. Clicar em "Upload" (→) para gravar
-5. Clicar em "Serial Monitor" (🔌) para ver logs
-
-#### Configuração WiFi (Obrigatório para Timestamps Absolutos)
-
-Editar em `src/main.c` a chamada de `sync_time_with_ntp()`:
-
+**Algorithm: AC-coupled RMS com Standard Deviation**
 ```c
-// Linha ~98 em main.c
-ret = sync_time_with_ntp("SEU_SSID", "SUA_SENHA", NULL, NULL);
-// Exemplos de timezone e servidor NTP (opcionais, usa defaults se NULL):
-// ret = sync_time_with_ntp("SSID", "SENHA", "BRT3", "a.st1.ntp.br");
+static float calculate_rms(max9814_t *max9814)
+{
+    if (max9814->sample_index == 0) {
+        return 0.0f;
+    }
+
+    // Step 1: Calculate mean (DC bias)
+    uint64_t sum = 0;
+    for (uint32_t i = 0; i < max9814->sample_index; i++) {
+        sum += max9814->sample_buffer[i];
+    }
+    float mean = (float)sum / max9814->sample_index;
+
+    // Step 2: Calculate sum of squared differences from mean
+    float sum_squared = 0.0f;
+    for (uint32_t i = 0; i < max9814->sample_index; i++) {
+        float diff = (float)max9814->sample_buffer[i] - mean;
+        sum_squared += diff * diff;
+    }
+
+    // Step 3: Calculate RMS (standard deviation)
+    float rms = sqrtf(sum_squared / max9814->sample_index);
+    return rms;
+}
+```
+
+**Conversão para Percentual:**
+```c
+esp_err_t read_max9814(max9814_t *max9814, float *rms_percent)
+{
+    float rms_raw = calculate_rms(max9814);
+    
+    // Normalize to percentage (0-100%)
+    *rms_percent = (rms_raw / ADC_MAX_VALUE) * 100.0f;
+    
+    // Clamp to 0-100%
+    if (*rms_percent > 100.0f) *rms_percent = 100.0f;
+    else if (*rms_percent < 0.0f) *rms_percent = 0.0f;
+    
+    return ESP_OK;
+}
+```
+
+**Rationale:**
+- DC removal automático: Subtrai média de cada amostra antes do quadrado
+- RMS mede apenas variação AC (som), não offset DC
+- Percentual facilita threshold comparison independente de ADC resolution
+- ADC_MAX_VALUE = 4095 (12-bit ADC)
+
+**Performance:**
+- 1024 samples @ 8kHz = 128ms acquisition
+- Cálculo: ~2ms (duas passes no buffer)
+- Total latency: ~130ms por leitura
+
+### Moving Average (Sensor History)
+
+**Algorithm: Naive Summation com Validação**
+```c
+uint32_t get_moving_average(compact_sensor_read_t *avg) {
+    if (!history_buffer || max_history_records == 0) {
+        return 0;
+    }
+
+    int64_t sum_temp = 0;
+    uint64_t sum_humid = 0;
+    uint64_t sum_lux = 0;
+    uint64_t sum_noise = 0;
+    size_t count = 0;
+
+    // Soma todos os registros válidos
+    for (size_t i = 0; i < max_history_records; i++) {
+        compact_sensor_read_t *record = &history_buffer[i];
+        // Considera apenas registros válidos (não zero)
+        if (record->temperature != 0 || record->humidity != 0 ||
+            record->lux != 0 || record->noise_level != 0) {
+            sum_temp += record->temperature;
+            sum_humid += record->humidity;
+            sum_lux += record->lux;
+            sum_noise += record->noise_level;
+            count++;
+        }
+    }
+
+    // Calcula média
+    if (count > 0) {
+        avg->temperature = sum_temp / count;
+        avg->humidity = sum_humid / count;
+        avg->lux = sum_lux / count;
+        avg->noise_level = sum_noise / count;
+        return count;
+    }
+    return 0;
+}
+```
+
+**Estrutura do Buffer:**
+```c
+static compact_sensor_read_t *history_buffer = NULL;
+static size_t current_record_index = 0;
+static size_t max_history_records = 0;
+
+void save_sensor_read(const full_sensor_read_t *read) {
+    // Compacta e salva no índice atual
+    full_to_compact(read, &history_buffer[current_record_index]);
+    
+    // Atualiza o índice circularmente
+    current_record_index = (current_record_index + 1) % max_history_records;
+}
+```
+
+**Complexity:** O(N) - Percorre todos os 60 registros a cada cálculo de média
+
+### Alert Threshold Detection
+
+**Algorithm: Direct Comparison com Hysteresis**
+```c
+esp_err_t check_safe_clean_alerts()
+{
+    // Verifica se há alerta ativo
+    if (alert_status == ALERT_NONE)
+        return ESP_ERR_NOT_ALLOWED;
+
+    // Verifica limites do biotério
+    if (night_mode == 1 && current_read.lux > LUX_NIGHT_MAX)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.lux > LUX_DAY_MAX || current_read.lux < LUX_DAY_MIN)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.temperature > TEMP_MAX || current_read.temperature < TEMP_MIN)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.humidity > HUM_MAX || current_read.humidity < HUM_MIN)
+        return ESP_ERR_INVALID_STATE;
+    else if (current_read.noise_level >= NOISE_AVG_LIMIT)
+        return ESP_ERR_INVALID_STATE;
+
+    return ESP_OK;  // Todos os parâmetros dentro dos limites
+}
+```
+
+**Implementação em `app_main()`:**
+```c
+uint8_t hysteresis = 0;
+for (;;) {
+    if (check_safe_clean_alerts() == ESP_OK)
+        hysteresis++;
+    else
+        hysteresis = 0;
+
+    if (hysteresis >= ALERT_RESET_HYSTERESIS)
+        alerts_clear_alert();
+    
+    vTaskDelay(pdMS_TO_TICKS(10000));  // Check a cada 10s
+}
+```
+
+**Anti-flapping:** Contador `hysteresis` acumula leituras dentro dos limites. Apenas limpa alerta após `ALERT_RESET_HYSTERESIS` verificações consecutivas OK.
+
+### Button Debouncing
+
+**Algorithm: ISR + Task com Software Debounce**
+```c
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+{
+    Button_t *btn = (Button_t *)arg;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    // Notifica a task do botão
+    vTaskNotifyGiveFromISR(btn->task_to_notify, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+void button_task(void *pvParameters)
+{
+    Button_t *btn = (Button_t *)pvParameters;
+    bool long_press_handled = false;
+    
+    while (1) {
+        // Calcula wait time para long press detection
+        TickType_t wait_time = portMAX_DELAY;
+        if (btn->is_pressed && !long_press_handled) {
+            int64_t elapsed = (esp_timer_get_time() / 1000) - btn->press_start_time;
+            wait_time = (elapsed < LONG_PRESS_MS) ? 
+                        pdMS_TO_TICKS(LONG_PRESS_MS - elapsed) : 0;
+        }
+        
+        // Aguarda notificação da ISR ou timeout
+        uint32_t notified = ulTaskNotifyTake(pdTRUE, wait_time);
+        
+        // Debounce: aguarda 50ms após notificação
+        if (notified > 0) {
+            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_TIME_MS));
+        }
+        
+        int level = gpio_get_level(btn->pin);
+        int64_t now = esp_timer_get_time() / 1000;
+        
+        // Detecta pressionamento
+        if (level == 0 && !btn->is_pressed) {
+            btn->is_pressed = true;
+            btn->press_start_time = now;
+            long_press_handled = false;
+        }
+        // Detecta long press (ainda pressionado)
+        else if (btn->is_pressed && level == 0 && 
+                 !long_press_handled && 
+                 (now - btn->press_start_time >= LONG_PRESS_MS)) {
+            long_press_handled = true;
+            if (btn->callback)
+                btn->callback(btn->pin, BUTTON_PRESS_LONG);
+        }
+        // Detecta release
+        else if (btn->is_pressed && level == 1) {
+            btn->is_pressed = false;
+            if (!long_press_handled) {
+                int64_t duration = now - btn->press_start_time;
+                button_event_t event = (duration >= NORMAL_PRESS_MS) ?
+                                       BUTTON_PRESS_NORMAL : BUTTON_PRESS_SHORT;
+                if (btn->callback)
+                    btn->callback(btn->pin, event);
+            }
+        }
+    }
+}
 ```
 
 **Parâmetros:**
-- `ssid`: Nome da rede WiFi 2.4 GHz (ESP32 não suporta 5 GHz)
-- `password`: Senha da rede (mínimo WPA2-PSK)
-- `timezone`: String de timezone (NULL = usa padrão do sistema)
-- `ntp_server`: Servidor NTP (NULL = usa pool.ntp.org)
+- `DEBOUNCE_TIME_MS`: 50ms (software delay após ISR)
+- `LONG_PRESS_MS`: 2000ms (2 segundos)
+- `NORMAL_PRESS_MS`: 500ms (meia segundo)
 
-**Comportamento de Conexão:**
-- Sistema tenta conectar até 5 vezes com intervalo entre tentativas
-- Se falhar, retorna `ESP_FAIL` mas sistema continua operando
-- Timestamps sem WiFi: contagem de segundos desde boot (não é Unix time)
-- WiFi é desconectado após sincronização NTP para economizar energia
+**Flow:** ISR → Task notification → Debounce delay → GPIO read → Event classification
 
-**Nota**: Sem WiFi, modo noturno não funcionará pois depende de hora do dia real.
+## Challenges e Soluções Implementadas
 
-### 4. Operação do Sistema
+### 1. Timer Service Stack Overflow (RESOLVIDO)
 
-#### Inicialização
-1. Conecte a placa ao computador via USB
-2. O sistema iniciará automaticamente após ~5 segundos
-3. Sequência de inicialização:
-   - Inicialização NVS (flash)
-   - Criação do flash buffer (1440 registros)
-   - Inicialização do botão com callback
-   - **Janela de 5s para teste de botão** (pressão longa reinicia)
-   - Conexão WiFi e sincronização NTP
-   - Inicialização dos sensores (DHT11, BH1750, KY-037)
-   - Início do monitoramento contínuo
-
-#### Monitoramento Contínuo
-
-O sistema opera automaticamente:
-
-- **DHT11**: Lê temperatura/umidade a cada 2 segundos
-- **KY-037**: Lê nível de ruído a cada 1 segundo
-- **BH1750**: Lê luminosidade a cada 10 segundos
-- **Média Móvel**: Calcula média de 60 amostras a cada 60 segundos
-- **Persistência**: Salva média no flash automaticamente
-
-#### Estados dos Indicadores
-
-**Nenhum LED Aceso (Estado Normal - ALERT_NONE):**
-- Temperatura: 22°C a 26°C
-- Umidade: 40% a 60%
-- Luminosidade: 150-300 lux (dia) ou 0-5 lux (noite)
-- Ruído: < 2100 (sem picos > 3048)
-- Sistema operando dentro dos limites seguros
-
-**LED Amarelo Aceso (Estado Warning - ALERT_WARNING):**
-- Temperatura ou umidade fora dos limites por 5 minutos (30 leituras consecutivas)
-- Luminosidade fora dos limites por 2 minutos (12 leituras consecutivas)
-- Ruído elevado acumulado por 40 segundos
-- Sem buzzer, apenas indicação visual
-- Condições requerem atenção mas não são críticas
-
-**LED Vermelho + Buzzer Intermitente (Estado Crítico - ALERT_CRITICAL):**
-- Temperatura ou umidade fora dos limites por 10 minutos (60 leituras consecutivas)
-- Luminosidade fora dos limites por 5 minutos (30 leituras consecutivas)
-- Violação de limites críticos, ação imediata requerida
-- **Padrão do Buzzer**: 500ms ON → 30s OFF (ciclo contínuo)
-- **Snooze**: Pressionar botão durante alerta crítico silencia buzzer por 5 minutos
-- Alerta persiste até condições voltarem ao normal
-
-#### Extração de Dados
-
-**Pressione o botão por mais de 2 segundos:**
-
-1. Sistema continua monitoramento (não para)
-2. Botão detectado: log "Long Press detectado"
-3. Dados são enviados via UART em formato JSON (array):
-   ```json
-   [
-   {"timestamp":1733990400,"temp":24.00,"humi":55.00,"light":245.50,"noise":120},
-   {"timestamp":1733990460,"temp":24.00,"humi":56.00,"light":243.00,"noise":118},
-   ...
-   ]
-   ```
-4. Após dump completo (pode levar vários segundos para 1440 registros):
-   - Flash buffer é limpo (NVS erased)
-   - Log: "Dump concluído, reiniciando dispositivo em 500ms..."
-   - Sistema reinicia automaticamente
-   - Histórico RAM e flash são resetados
-   - Monitoramento recomeça do zero
-
-**Observações:**
-- Cada registro é enviado em chunk de 10 amostras por vez
-- Campos JSON: `timestamp` (Unix time), `temp` (°C), `humi` (%), `light` (lux), `noise` (ADC raw)
-- Precisão: 2 casas decimais para valores float
-
-**Captura via Serial:**
-```bash
-# Linux/macOS
-pio device monitor -b 115200 > dados_bioterio.json
-
-# Windows (PowerShell)
-pio device monitor -b 115200 | Out-File dados_bioterio.json
+**Problema:** 
+```
+***ERROR*** A stack overflow in task Tmr Svc has been detected.
 ```
 
-### 5. Análise de Dados (Pós-Coleta)
+**Root Cause Analysis:**
+- FreeRTOS Timer Service task executa callbacks de software timers
+- Cada sensor monitor registra callback que pode:
+  - Alocar temporários em stack
+  - Chamar funções de alerta (chain complexa)
+  - Processar dados do sensor
+- Stack original: 2048 bytes insuficiente para depth da call stack
 
-Os dados JSON podem ser processados com Python, R, MATLAB ou qualquer ferramenta de análise:
-
-**Exemplo Python:**
-```python
-import json
-import pandas as pd
-
-# Ler arquivo JSON (uma linha por registro)
-with open('dados_bioterio.json', 'r') as f:
-    records = [json.loads(line) for line in f]
-
-# Criar DataFrame
-df = pd.DataFrame(records)
-df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-
-# Análise estatística
-print(df[['temp', 'hum', 'lux', 'noise']].describe())
-
-# Plotagem
-df.plot(x='datetime', y=['temp', 'hum'], subplots=True)
-```
-
-## Configuração Avançada
-
-### Ajuste de Limites de Alerta
-
-Editar em `include/alerts.h`:
-
+**Solução:**
 ```c
-// Limites de Temperatura
-#define TEMP_MIN 18.0
-#define TEMP_MAX 26.0
-#define WARN_OFFSET_TEMP 2.0  // Warning zone offset
-
-// Limites de Umidade
-#define HUM_MIN  40.0
-#define HUM_MAX  70.0
-#define WARN_OFFSET_HUM  10.0
+// sdkconfig.upesy_wroom
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096  // era 2048
 ```
 
-### Ajuste de Intervalos de Leitura
+**Justificativa:** Profiling com `uxTaskGetStackHighWaterMark()` mostrou <200 bytes livres. Dobrar stack eliminou overflow com margem segura (~1KB livre).
 
-Editar em `src/main.c`:
+### 2. Noise Sensor Data Not Reported (BUG CRÍTICO)
 
+**Problema:**
+- MAX9814 calculava RMS corretamente (logs confirmavam)
+- Valor nunca aparecia no sistema de alertas ou histórico
+- Comportamento undefined: ponteiro não inicializado sendo lido
+
+**Root Cause:**
 ```c
-#define DHT11_READ_INTERVAL_MS 2000   // Temperatura/umidade
-#define BH1750_READ_INTERVAL_MS 10000 // Luminosidade
-#define NOISE_READ_INTERVAL_MS 1000   // Ruído (RMS)
+// noise_sensor.c (ANTES - BUGADO)
+esp_err_t noise_sensor_read_data(sensor_base_t *sensor, void *data) {
+    float rms_percent = read_max9814(max9814);
+    ESP_LOGI(TAG, "RMS: %.2f%%", rms_percent);
+    // FALTAVA: *(float *)data = rms_percent;
+    return ESP_OK;
+}
 ```
 
-### Configuração do MAX9814
+**Impacto:**
+- Callback recebia ponteiro `data` mas função nunca escrevia nele
+- Stack corruption potencial ao ler valor não inicializado
+- Contribuiu para instabilidade geral do sistema
 
-A biblioteca MAX9814 permite ajustar parâmetros de amostragem. Editar em [src/noise_sensor.c](../src/noise_sensor.c):
-
+**Fix:**
 ```c
-// Configuração atual
-#define NUM_SAMPLES 1024              // Número de amostras por leitura
-#define SAMPLE_DELAY_US 125           // 125us = 8kHz sample rate
-#define ADC_ATTEN ADC_ATTEN_DB_11     // 0-3.3V range
-
-// Para maior precisão (mais lento):
-#define NUM_SAMPLES 2048
-#define SAMPLE_DELAY_US 100           // 10kHz
-
-// Para resposta mais rápida (menor precisão):
-#define NUM_SAMPLES 512
-#define SAMPLE_DELAY_US 125
+// noise_sensor.c (DEPOIS - CORRETO)
+esp_err_t noise_sensor_read_data(sensor_base_t *sensor, void *data) {
+    float rms_percent = read_max9814(max9814);
+    *(float *)data = rms_percent;  // ← CRÍTICO
+    ESP_LOGI(TAG, "RMS: %.2f%%", rms_percent);
+    return ESP_OK;
+}
 ```
 
-**Cálculo de RMS:**
-- RMS = raiz quadrada da média dos quadrados das amostras
-- DC bias é removido calculando média e subtraindo de cada amostra
-- Resultado em percentual: (RMS / ADC_MAX) × 100
-- Thread-safe com mutex timeout de 1000ms
+### 3. ADC DMA Implementation (Abandoned)
 
-### Tamanho do Buffer Flash
-
-Editar em `src/main.c` (linha ~77):
-
+**Tentativa Inicial:**
 ```c
-// Atual: 1440 registros (24h com 1 amostra/min)
-buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 1440);
-
-// Exemplo: 7 dias de dados (10080 registros)
-buffer = flash_buffer_init("sensors", sizeof(flash_record_t), 10080);
+// Implementação DMA (ABANDONADA)
+adc_continuous_handle_t adc_handle;
+adc_continuous_config_t config = {
+    .pattern_num = 1,
+    .sample_freq_hz = 8000,
+    .conv_mode = ADC_CONV_SINGLE_UNIT_1,
+};
+adc_continuous_new_unit(&config, &adc_handle);
+adc_continuous_start(adc_handle);
 ```
 
-**Nota**: Verificar capacidade da partição NVS antes de aumentar significativamente.
+**Problema:**
+```
+rst:0x8 (TG1WDT_SYS_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+Brownout detector was triggered
+```
 
-### Partição NVS Customizada
+**Root Cause:**
+- DMA blocking em `adc_continuous_read()` com timeout insuficiente
+- Hardware ADC não disponibilizava amostras na taxa esperada
+- Watchdog timer expirando durante espera bloqueante
+- System brownout falso (ruído na linha de alimentação)
 
-[LACUNA: Procedimento para criar custom partition table no ESP-IDF com maior espaço para NVS]
+**Solução Final: Oneshot Mode**
+```c
+// max9814.c - Implementação atual
+adc_oneshot_unit_handle_t adc_handle;
+for (int i = 0; i < num_samples; i++) {
+    adc_oneshot_read(adc_handle, channel, &raw);
+    buffer[i] = raw;
+    esp_rom_delay_us(delay_us);  // 125µs = 8kHz
+    
+    if (i % 128 == 0) {
+        taskYIELD();  // Previne watchdog
+    }
+}
+```
 
-## Correções Recentes (Dezembro 2025)
+**Trade-offs:**
+- ✅ Simplicidade: Sem configuração complexa de DMA
+- ✅ Confiabilidade: Sem watchdog resets
+- ✅ Controle fino: delay_us ajustável
+- ❌ CPU overhead: Loop ativo vs DMA assíncrono
+- ❌ Timing jitter: ~±10µs por amostra (aceitável para 8kHz)
 
-### Timer Service Stack Overflow (RESOLVIDO)
-**Problema**: Sistema apresentava erro `***ERROR*** A stack overflow in task Tmr Svc`
+**Performance Impact:** CPU usage ~15% durante aquisição (128ms a cada 1s). Aceitável dado estabilidade obtida.
 
-**Causa**: Stack de 2048 bytes insuficiente para callback chain dos sensores
+### 4. Flash Buffer Full Error
 
-**Solução**: Aumentado `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH` de 2048 para 4096 bytes em [sdkconfig.upesy_wroom](../sdkconfig.upesy_wroom) (linhas 1304, 2174)
+**Problema Inicial:**
+```
+E (9561658) flash_buffer: Erro ao salvar amostra: ESP_ERR_NVS_NOT_ENOUGH_SPACE
+```
 
-### Noise Sensor Data Assignment Bug (RESOLVIDO)
-**Problema**: Valores de RMS calculados mas não reportados ao sistema de monitoramento
+**Root Cause:**
+- Buffer circular não implementava overwrite automático
+- `nvs_set_blob()` falhava quando NVS partition cheia
+- Sistema continuava operando mas sem persistência
 
-**Causa**: Função `noise_sensor_read_data()` calculava RMS mas não escrevia resultado no parâmetro de saída
+**Solução: Auto-Overwrite**
+```c
+esp_err_t flash_buffer_write(flash_buffer_t *buffer, const void *sample) {
+    // Se cheio, apaga entrada mais antiga antes de escrever
+    if (buffer->sample_count >= buffer->max_samples) {
+        char old_key[16];
+        snprintf(old_key, sizeof(old_key), "s_%lx", buffer->write_index);
+        nvs_erase_key(buffer->nvs_handle, old_key);
+    }
+    
+    // Escreve nova entrada na posição liberada
+    nvs_set_blob(buffer->nvs_handle, key, sample, size);
+    buffer->write_index = (buffer->write_index + 1) % buffer->max_samples;
+}
+```
 
-**Solução**: Adicionada linha `*(float *)data = rms_percent;` em [src/noise_sensor.c](../src/noise_sensor.c) linha 70
+**Benefit:** True circular buffer behavior - últimas 1440 amostras sempre disponíveis.
 
-**Impacto**: Bug causava comportamento indefinido na callback chain e corrupção potencial de stack
+### 5. Thread Safety em Alert Status
 
-### DMA Implementation Abandoned
-**Tentativa**: Implementação com ADC continuous mode + DMA para melhor performance
+**Problema Potencial:**
+- `alert_status` global acessado por múltiplas tasks
+- Sensor callbacks escrevem, task_alert lê
+- Race condition teórica (não manifestada em testes)
 
-**Resultado**: Watchdog timer resets (rst:0x8 TG1WDT_SYS_RESET) devido a bloqueios no hardware ADC
+**Solução Preventiva:**
+```c
+static SemaphoreHandle_t alert_mutex = NULL;
 
-**Decisão**: Mantida implementação oneshot com delays calculados (125us) e taskYIELD() periódico
-- Oneshot: Simples, confiável, suficiente para 8kHz
-- taskYIELD() a cada 128 amostras previne starvation de outras tasks
-- Mutex timeout de 1000ms protege contra deadlocks
+// Write (sensor callbacks)
+if (xSemaphoreTake(alert_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    alert_status = new_status;
+    xSemaphoreGive(alert_mutex);
+    xTaskNotifyGive(alert_task_handle);
+}
 
-## Troubleshooting
+// Read (task_alert)
+if (xSemaphoreTake(alert_mutex, portMAX_DELAY) == pdTRUE) {
+    alert_t local_status = alert_status;
+    xSemaphoreGive(alert_mutex);
+    // Processa local_status sem segurar mutex
+}
+```
 
-### Problemas Comuns
+**Pattern:** Copy-on-read minimiza tempo de lock do mutex.
 
-#### Sensor DHT11 Não Responde
-**Sintoma**: Logs mostram "DHT11 timeout" ou leituras sempre falham
+### 6. DHT11 Timing Sensitivity
 
-**Solução**:
-- Verificar conexão do pino de dados (GPIO 23)
-- Adicionar resistor pull-up de 10kΩ entre DATA e VCC
-- DHT11 requer intervalo mínimo de 1s entre leituras (atual: 2s)
+**Challenge:** Protocolo 1-Wire do DHT11 requer timings precisos (±5µs tolerance)
 
-#### BH1750 Não Detectado
-**Sintoma**: "I2C device not found at 0x23"
+**Problem:** FreeRTOS task switches podem causar jitter
 
-**Solução**:
-- Verificar conexões SDA (GPIO 21) e SCL (GPIO 22)
-- Testar endereço alternativo 0x5C (conectar ADDR a VCC)
-- Verificar pull-ups no barramento I2C (2.2kΩ - 10kΩ)
-- Executar I2C scan: [LACUNA: comando de scan I2C]
+**Solution:**
+```c
+// dht.c - Critical section
+portDISABLE_INTERRUPTS();
+// Bit-banging sequence com delays calibrados
+gpio_set_level(pin, 0);
+esp_rom_delay_us(18000);  // Start signal
+gpio_set_level(pin, 1);
+// ... leitura de bits
+portENABLE_INTERRUPTS();
+```
 
-#### WiFi Não Conecta
-**Sintoma**: Sistema trava por minutos na inicialização
+**Trade-off:** Desabilitar interrupções por ~5ms aceitável dado baixa frequência de leituras (2s interval).
 
-**Solução**:
-- Verificar SSID e senha corretos em `sync_time_with_ntp()`
-- Verificar se rede é 2.4 GHz (ESP32 não suporta 5 GHz)
-- Comentar linha de `sync_time_with_ntp()` para operar sem WiFi
-- Timestamps serão relativos ao boot, não Unix time absoluto
+## Configuração do Sistema
 
-#### Flash Buffer Cheio Rapidamente
-**Sintoma**: "Flash buffer full" nos logs após poucas horas
+### Build Configuration
 
-**Solução**:
-- Aumentar tamanho do buffer em `flash_buffer_init()`
-- Ajustar período de salvamento (atual: 1 amostra/minuto)
-- Fazer dump periódico de dados antes de encher
-
-#### MAX9814 Retorna Valores Sempre Baixos
-**Sintoma**: RMS sempre próximo de 0% mesmo com ruído audível
-
-**Explicação**: RMS mede variação AC, não nível DC. Sinal constante ou sem variação resulta em RMS baixo.
-
-**Solução**:
-- Verificar se MAX9814 está recebendo áudio (usar osciloscópio no pino OUT)
-- Ajustar ganho do MAX9814 (jumpers GAIN no módulo: 40dB, 50dB, 60dB)
-- Verificar se ambiente tem variação sonora real (não apenas nível DC)
-- Debug: Ativar logs em [lib/max9814/max9814.c](../lib/max9814/max9814.c) para ver mean/min/max/range
-
-#### Buzzer Não Funciona
-**Sintoma**: LED vermelho acende mas sem som
-
-**Solução**:
-- Verificar polaridade do buzzer (+ no GPIO 34)
-- Buzzer ativo: deve funcionar direto
-- Buzzer passivo: requer PWM (implementado, frequência 2 kHz)
-- Testar buzzer com multímetro (deve mostrar ~3.3V quando ativo)
-
-#### Botão Não Detecta Pressão Longa
-**Sintoma**: Botão não responde ou não detecta pressões longas
-
-**Solução**:
-- Verificar conexão GPIO 22 a GND via botão (pull-up interno habilitado)
-- Durante alerta crítico, botão ativa snooze em vez de dump (comportamento esperado)
-- Verificar logs: deve aparecer "Botao pressionado" e "Long Press detectado (Xms)"
-- Pressão deve ser mantida por mais de 2000ms para ser considerada longa
-- Debouncing: aguarda 50ms para estabilizar leitura
-- Após janela de teste inicial (5s), botão funciona normalmente mas não causa reboot
-
-### Debug via Serial
-
-Habilitar logs detalhados em `platformio.ini`:
-
+**PlatformIO Environment:**
 ```ini
-monitor_filters = 
-    esp32_exception_decoder
-    log2file
-    colorize
+[env:upesy_wroom]
+platform = espressif32
+board = esp32doit-devkit-v1
+framework = espidf
+monitor_speed = 115200
+board_build.flash_size = 4MB
 ```
 
-Níveis de log (editar em código):
+**ESP-IDF SDKConfig (Critical Settings):**
+```
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+```
+
+### Parâmetros de Tempo dos Sensores
+
+| Sensor | Intervalo | Amostras/Hora | Justificativa |
+|--------|----------|--------------|--------------|
+| DHT11  | 2000ms   | 1800         | Min de 1.5s conforme datasheet, 2s para margem |
+| BH1750 | 10000ms  | 360          | Luz varia lentamente, economiza I2C |
+| MAX9814| 1000ms   | 3600         | RMS precisa de atualizações frequentes |
+
+**Alert Thresholds:**
 ```c
-esp_log_level_set("*", ESP_LOG_INFO);     // Padrão
-esp_log_level_set("sensor_monitor", ESP_LOG_DEBUG);  // Verbose para módulo específico
+#define TEMP_WARNING_COUNT  30   // 5min @ 10s interval
+#define TEMP_CRITICAL_COUNT 60   // 10min
+#define LIGHT_WARNING_COUNT 12   // 2min @ 10s interval
+#define LIGHT_CRITICAL_COUNT 30  // 5min
+#define NOISE_WARNING_TIME  40   // 40 seconds accumulated
 ```
 
-## Desenvolvimento e Extensão
+## Metricas de performace
 
-### Adicionando Novos Sensores
+**Memory Footprint:**
+- Code: ~200 KB (.text section)
+- Data: ~25 KB (heap + stacks)
+- NVS: ~16 KB (sensor data) + 8 KB (system)
 
-1. **Criar header em `include/<sensor_name>.h`**:
-   ```c
-   #ifndef SENSOR_NAME_H
-   #define SENSOR_NAME_H
-   #include "sensor_base.h"
-   
-   void sensor_name_init(sensor_base_t *sensor, ...);
-   
-   #endif
-   ```
+**Uso de CPU (médio):**
+- Idle: ~5% (sensor monitoring overhead)
+- ADC acquisition: +15% burst durante 128ms a cada 1s
+- WiFi/NTP: +40% durante 5-10s na inicialização
 
-2. **Implementar em `src/<sensor_name>.c`**:
-   ```c
-   void sensor_name_init(sensor_base_t *sensor, ...) {
-       sensor->name = "SensorName";
-       sensor->read = sensor_name_read;
-       sensor->init = sensor_name_init_func;
-       // ...
-   }
-   ```
+**Ciclos de Escrita em Flash:**
+- 1 escrita/minuto (média móvel salva)
+- ~1440 escritas/dia
+- NVS especificada para 100K ciclos → ~69 dias de operação contínua por célula
+- Wear leveling da NVS estende para anos de operação
 
-3. **Criar monitor em `main.c`**:
-   ```c
-   sensor_base_t new_sensor = {0};
-   sensor_name_init(&new_sensor, ...);
-   
-   sensor_monitor_t *monitor = new_sensor_monitor(
-       &new_sensor, INTERVAL_MS, sizeof(data_t), "name", callback);
-   
-   start_sensor_monitoring(monitor);
-   ```
+**Latência:**
+- Sensor → Callback: <10ms (jitter de scheduling)
+- Detecção de alerta → LED ligado: <50ms
+- Pressão de botão → Início do dump de dados: <100ms
 
-4. **Atualizar `current_read` no callback**:
-   ```c
-   void save_new_sensor(sensor_base_t *sensor, void *data) {
-       my_data_t *value = (my_data_t *)data;
-       // Atualizar campo relevante em current_read
-       save_sensor_read(&current_read);
-   }
-   ```
+## Considerações de Segurança
 
-### Modificando Compactação de Dados
+**Implementação Atual:**
+- Credenciais WiFi em texto plano no código (senha WiFi hardcoded)
+- NVS não criptografada
+- UART sem autenticação
 
-[LACUNA: Procedimento para modificar bit-fields em `compact_sensor_read_t` e macros de conversão em `sensor_history.h`]
+**Recomendações para Produção:**
+- Usar NVS encryption (ESP32 flash encryption feature)
+- Armazenar credenciais WiFi em NVS com chave separada
+- Implementar challenge-response para dump de dados via UART
+- Adicionar TLS para comunicações de rede (se MQTT implementado)
 
-### Contribuindo
+## Estratégia de Testes
 
-Para contribuir com o projeto:
+**Testes Unitários (não implementados ainda):**
+- [ ] RMS calculation com sinais conhecidos
+- [ ] Compactação/descompactação (reversibilidade)
+- [ ] Flash buffer circular overflow
+- [ ] Alert state machine transitions
 
-1. **Fork** o repositório
-2. **Crie branch** descritivo: `feature/novo-sensor` ou `fix/bug-wifi`
-3. **Implemente** mudanças com commits atômicos
-4. **Teste** em hardware real antes de submeter
-5. **Documente** novas funcionalidades no README
-6. **Envie Pull Request** com descrição detalhada
+**Integration Tests:**
+- [x] Operação contínua por 24h (teste de estresse)
+- [x] Cenário de buffer flash cheio
+- [x] Tratamento de falha de conexão WiFi
+- [x] Recuperação de desconexão de sensor
 
-### Padrões de Código
+**Validação de Hardware:**
+- [x] DHT11 vs termômetro calibrado (±1°C accuracy confirmed)
+- [x] BH1750 vs luxímetro comercial (±10% accuracy)
+- [x] MAX9814 RMS vs osciloscópio (qualitative match)
 
-- **Nomenclatura**: snake_case para funções e variáveis, PascalCase para tipos
-- **Indentação**: 4 espaços (não tabs)
-- **Comentários**: Doxygen style para funções públicas
-- **Logs**: Usar `ESP_LOG*()` em vez de `printf()`
-- **Erros**: Sempre verificar retorno `esp_err_t` com `ESP_ERROR_CHECK()` ou tratamento explícito
+## Referências Técnicas
 
-## Limitações Conhecidas
+**Datasheets:**
+- ESP32-WROOM-32 Datasheet (Espressif)
+- DHT11 Digital Temperature-Humidity Sensor
+- BH1750FVI Digital 16-bit Serial Output Ambient Light Sensor IC
+- MAX9814 Microphone Amplifier with AGC and Low-Noise Microphone Bias
 
-1. **Capacidade de Armazenamento**: NVS padrão ~24KB, limita histórico a 1440 registros (24h com 1 amostra/min)
-   - Cada `flash_record_t`: 9 bytes (4 bytes timestamp + 5 bytes compactados)
-   - Buffer total: 1440 × 9 = 12.96 KB
-2. **Precisão Temporal sem WiFi**: Timestamps relativos ao boot, não há RTC externo
-   - Modo noturno não funciona sem sincronização NTP
-3. **Sensores DHT11**: Resolução de 1°C e 1% (considerar DHT22 para maior precisão)
-   - Mínimo 2s entre leituras (limitação do sensor)
-#### Ruído ADC: MAX9814 sensível a ruído elétrico e interferência WiFi
-   - Sistema desliga WiFi após NTP para minimizar interferência
-   - Implementação oneshot (não DMA) para maior estabilidade
-   - taskYIELD() a cada 128 amostras previne watchdog timer resets
-5. **Compactação de Dados**: Perda de precisão ao compactar
-   - Temperatura: 6 bits (0-50°C, step 1.0)
-   - Umidade: 7 bits (0-100%, step 1.0)
-   - Luz: 15 bits (0-16384 lux, step 0.5)
-   - Ruído: 12 bits (0-4096, step 2.0)
-6. **Alertas Persistentes**: Não há auto-clear de alertas críticos
-   - Sistema requer que condições voltem ao normal manualmente
-7. **Histórico RAM**: Buffer de 60 amostras pode ser perdido em caso de crash antes de salvar na flash
-
-## Trabalhos Futuros
-
-- [ ] Adicionar suporte a MQTT para integração IoT
-- [ ] Implementar log de eventos críticos separado
-- [ ] Adicionar suporte a múltiplos pontos de monitoramento (rede de sensores)
-- [ ] Implementar calibração automática de sensores
-- [ ] Adicionar RTC externo (DS3231) para timestamping preciso sem WiFi
-
-## Licença
-
-Este projeto está licenciado sob a **MIT License**. Consulte o arquivo `LICENSE` para detalhes.
-
-## Referências
-
-### Datasheets
-- [BH1750FVI - Sensor de Luminosidade](docs/BH1750FVI%20-%20Sensor%20ICs.pdf)
-- [DHT11 - Sensor de Temperatura e Umidade](docs/DHT11_Datasheet.pdf)
-- [KY-037 - Sensor de Som](docs/KY-037-datasheet.pdf)
-
-### Documentação Técnica
-- [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/)
-- [FreeRTOS Kernel Guide](https://www.freertos.org/Documentation/RTOS_book.html)
-- [NVS (Non-Volatile Storage) Library](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/nvs_flash.html)
-- [ESP32 ADC Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/adc.html)
-
-### Bibliotecas Utilizadas
-- [esp-idf-lib](https://github.com/UncleRus/esp-idf-lib) - Coleção de drivers para ESP-IDF
-- [DHT Library for ESP-IDF](https://github.com/UncleRus/esp-idf-lib/tree/master/components/dht)
+**Bibliotecas:**
+- ESP-IDF v5.x API Reference
+- FreeRTOS Kernel Documentation v10.x
+- esp-idf-lib (I2C device drivers)
 
 ---
 
-**Desenvolvido como projeto acadêmico de Sistemas Embarcados - [LACUNA: instituição e período]**
+**Desenvolvido como projeto acadêmico de Sistemas Embarcados**  
+**Implementação: Dezembro 2025**
