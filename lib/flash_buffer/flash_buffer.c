@@ -102,6 +102,24 @@ esp_err_t flash_buffer_write(flash_buffer_t *buffer, const void *sample)
         return ESP_ERR_INVALID_ARG;
     }
 
+    // Se buffer está cheio, apaga a amostra mais antiga antes de escrever
+    if (buffer->sample_count >= buffer->max_samples)
+    {
+        char old_key[16];
+        snprintf(old_key, sizeof(old_key), KEY_SAMPLE_FMT, buffer->write_index);
+        
+        esp_err_t erase_err = nvs_erase_key(buffer->nvs_handle, old_key);
+        if (erase_err != ESP_OK && erase_err != ESP_ERR_NVS_NOT_FOUND)
+        {
+            ESP_LOGW(TAG, "Aviso ao apagar amostra antiga (idx=%lu): %s", 
+                     buffer->write_index, esp_err_to_name(erase_err));
+        }
+        else
+        {
+            ESP_LOGD(TAG, "Amostra antiga sobrescrita (idx=%lu)", buffer->write_index);
+        }
+    }
+
     // Gera chave para esta amostra
     char key[16];
     snprintf(key, sizeof(key), KEY_SAMPLE_FMT, buffer->write_index);
